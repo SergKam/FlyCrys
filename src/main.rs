@@ -1,4 +1,9 @@
+mod agent_panel;
+mod agent_process;
+mod agent_widgets;
 mod file_entry;
+mod highlight;
+mod markdown;
 mod terminal;
 mod textview;
 mod tree;
@@ -73,6 +78,7 @@ fn build_ui(app: &gtk::Application) {
 
     let menu = gio::Menu::new();
     menu.append(Some("Copy Path"), Some("win.copy-path"));
+    menu.append(Some("Add to Chat"), Some("win.add-to-chat"));
     menu.append(Some("Open Terminal Here"), Some("win.open-terminal-here"));
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
@@ -113,13 +119,43 @@ fn build_ui(app: &gtk::Application) {
     ));
     list_view.add_controller(right_click);
 
+    // Agent panel (right side)
+    let (agent_panel, agent_input) = agent_panel::create_agent_panel();
+
+    let outer_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+    outer_paned.set_start_child(Some(&paned));
+    outer_paned.set_end_child(Some(&agent_panel));
+    outer_paned.set_position(980);
+    outer_paned.set_resize_start_child(true);
+    outer_paned.set_resize_end_child(false);
+    outer_paned.set_shrink_start_child(false);
+    outer_paned.set_shrink_end_child(false);
+
+    // CSS
+    let css = gtk::CssProvider::new();
+    css.load_from_string(
+        r#"
+        .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
+        .tool-call { background: alpha(@warning_bg_color, 0.08); border-radius: 4px; padding: 4px; }
+        .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
+        .error-text { color: @error_color; }
+        .monospace { font-family: monospace; font-size: 0.9em; }
+        .code-view text { background-color: #2d2d2d; color: #d3d0c8; }
+        "#,
+    );
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().unwrap(),
+        &css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     // Window
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("FlyCristal")
-        .default_width(1200)
+        .default_width(1400)
         .default_height(800)
-        .child(&paned)
+        .child(&outer_paned)
         .build();
 
     // Action: Copy Path
@@ -163,5 +199,92 @@ fn build_ui(app: &gtk::Application) {
     ));
     window.add_action(&action_terminal);
 
+    // Action: Add to Chat
+    let action_add_chat = gio::SimpleAction::new("add-to-chat", None);
+    action_add_chat.connect_activate(glib::clone!(
+        #[weak] agent_input,
+        #[strong] ctx_path,
+        move |_, _| {
+            let path = ctx_path.borrow().clone();
+            if !path.is_empty() {
+                append_path_to_input(&agent_input, &path);
+            }
+        }
+    ));
+    window.add_action(&action_add_chat);
+
+    // --- Drag from file tree → drop on agent input ---
+
+    // Drag source on the ListView
+    let drag_source = gtk::DragSource::new();
+    drag_source.set_actions(gtk::gdk::DragAction::COPY);
+    drag_source.connect_prepare(glib::clone!(
+        #[weak] list_view,
+        #[upgrade_or] None,
+        move |_source, x, y| {
+            // Find the FileEntry at (x, y) via TreeExpander walk
+            let widget = list_view.pick(x, y, gtk::PickFlags::DEFAULT)?;
+            let mut current = Some(widget);
+            while let Some(w) = current {
+                if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
+                    if let Some(item) = expander.item() {
+                        if let Some(entry) = item.downcast_ref::<FileEntry>() {
+                            let path = entry.path();
+                            return Some(gtk::gdk::ContentProvider::for_value(
+                                &path.to_value(),
+                            ));
+                        }
+                    }
+                    return None;
+                }
+                current = w.parent();
+            }
+            None
+        }
+    ));
+    list_view.add_controller(drag_source);
+
+    // Drop target on the agent input TextView
+    let drop_target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
+    drop_target.connect_drop(glib::clone!(
+        #[weak] agent_input,
+        #[upgrade_or] false,
+        move |_target, value, _x, _y| {
+            if let Ok(path) = value.get::<String>() {
+                append_path_to_input(&agent_input, &path);
+                return true;
+            }
+            false
+        }
+    ));
+    agent_input.add_controller(drop_target);
+
+    // Also accept drops anywhere on the agent panel
+    let panel_drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
+    panel_drop.connect_drop(glib::clone!(
+        #[weak] agent_input,
+        #[upgrade_or] false,
+        move |_target, value, _x, _y| {
+            if let Ok(path) = value.get::<String>() {
+                append_path_to_input(&agent_input, &path);
+                return true;
+            }
+            false
+        }
+    ));
+    agent_panel.add_controller(panel_drop);
+
     window.present();
+}
+
+fn append_path_to_input(input: &gtk::TextView, path: &str) {
+    let buffer = input.buffer();
+    let mut end = buffer.end_iter();
+    let current = buffer.text(&buffer.start_iter(), &end, false);
+    let prefix = if current.is_empty() || current.ends_with(' ') || current.ends_with('\n') {
+        ""
+    } else {
+        " "
+    };
+    buffer.insert(&mut end, &format!("{prefix}{path}"));
 }
