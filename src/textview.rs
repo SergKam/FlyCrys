@@ -2,6 +2,8 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use std::path::Path;
 
+use crate::highlight;
+
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 pub fn create_text_view() -> (gtk::Box, gtk::TextView, gtk::Label) {
@@ -21,6 +23,7 @@ pub fn create_text_view() -> (gtk::Box, gtk::TextView, gtk::Label) {
     text_view.set_wrap_mode(gtk::WrapMode::None);
     text_view.set_left_margin(8);
     text_view.set_top_margin(8);
+    text_view.add_css_class("code-view");
 
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -59,7 +62,13 @@ pub fn load_file(text_view: &gtk::TextView, path_label: &gtk::Label, file_path: 
     }
 
     match std::fs::read_to_string(path) {
-        Ok(content) => buffer.set_text(&content),
+        Ok(content) => {
+            if highlight::is_highlightable(file_path) {
+                highlight::highlight_buffer(&buffer, &content, file_path);
+            } else {
+                buffer.set_text(&content);
+            }
+        }
         Err(e) => buffer.set_text(&format!("Cannot read file: {e}")),
     }
 }
