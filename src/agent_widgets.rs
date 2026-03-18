@@ -50,8 +50,8 @@ pub fn create_assistant_text() -> (gtk::Box, gtk::Label) {
 }
 
 /// Update assistant label with markdown-rendered content
-pub fn update_assistant_text(label: &gtk::Label, raw_md: &str) {
-    let markup = crate::markdown::md_to_pango(raw_md);
+pub fn update_assistant_text(label: &gtk::Label, raw_md: &str, is_dark: bool) {
+    let markup = crate::markdown::md_to_pango(raw_md, is_dark);
     // Validate markup first; if invalid, fall back to plain text so content is never lost
     if gtk::pango::parse_markup(&markup, '\0').is_ok() {
         label.set_markup(&markup);
@@ -60,25 +60,31 @@ pub fn update_assistant_text(label: &gtk::Label, raw_md: &str) {
     }
 }
 
-/// Tool call expandable panel with optional clickable file path
+/// Tool call panel: header with spinner + tool info, expandable output area.
+/// Returns (container, content_box, spinner, expander).
 pub fn create_tool_call(
     tool_name: &str,
     tool_input_hint: &str,
     file_path: Option<&str>,
     on_open_file: Rc<dyn Fn(&str)>,
-) -> (gtk::Expander, gtk::Box) {
-    let expander = gtk::Expander::new(None);
-    expander.set_margin_start(8);
-    expander.set_margin_end(8);
-    expander.set_margin_top(4);
-    expander.set_margin_bottom(4);
-    expander.add_css_class("tool-call");
+) -> (gtk::Box, gtk::Box, gtk::Spinner, gtk::Expander) {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    container.set_margin_start(8);
+    container.set_margin_end(8);
+    container.set_margin_top(4);
+    container.set_margin_bottom(4);
+    container.add_css_class("tool-call");
 
-    // Build header label widget
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    // Header row: spinner + tool name(args)
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+
+    let spinner = gtk::Spinner::new();
+    spinner.set_spinning(true);
+    spinner.set_size_request(16, 16);
+    header.append(&spinner);
 
     if let Some(path) = file_path {
-        let name_label = gtk::Label::new(Some(&format!("● {tool_name}(")));
+        let name_label = gtk::Label::new(Some(&format!("{tool_name}(")));
         header.append(&name_label);
 
         let short_path = if path.len() > 60 {
@@ -115,24 +121,23 @@ pub fn create_tool_call(
         } else {
             tool_input_hint.to_string()
         };
-        let label = gtk::Label::new(Some(&format!("● {tool_name}({short})")));
+        let label = gtk::Label::new(Some(&format!("{tool_name}({short})")));
         header.append(&label);
     }
 
-    expander.set_label_widget(Some(&header));
+    container.append(&header);
+
+    // Expandable output area (hidden until result arrives)
+    let expander = gtk::Expander::new(Some("Output"));
+    expander.set_expanded(false);
+    expander.set_visible(false);
+    expander.set_margin_start(20);
 
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    content_box.set_margin_start(16);
-
-    // Spinner shown while tool runs
-    let spinner = gtk::Spinner::new();
-    spinner.set_spinning(true);
-    spinner.set_halign(gtk::Align::Start);
-    content_box.append(&spinner);
-
     expander.set_child(Some(&content_box));
+    container.append(&expander);
 
-    (expander, content_box)
+    (container, content_box, spinner, expander)
 }
 
 fn escape_markup(s: &str) -> String {
@@ -145,14 +150,19 @@ fn escape_markup(s: &str) -> String {
 /// Fill tool result into the tool call's content box
 pub fn fill_tool_result(
     content_box: &gtk::Box,
+    spinner: &gtk::Spinner,
+    expander: &gtk::Expander,
     output: &str,
     is_error: bool,
     tool_name: &str,
     tool_input: &str,
 ) {
-    // Remove the spinner
-    while let Some(child) = content_box.first_child() {
-        content_box.remove(&child);
+    spinner.set_spinning(false);
+    spinner.set_visible(false);
+
+    // No output — expander stays hidden (e.g. Read tool)
+    if output.trim().is_empty() {
+        return;
     }
 
     // For Edit tool, try to show a highlighted diff
@@ -166,6 +176,7 @@ pub fn fill_tool_result(
             label.set_selectable(true);
             label.add_css_class("monospace");
             content_box.append(&label);
+            expander.set_visible(true);
             return;
         }
     }
@@ -198,6 +209,7 @@ pub fn fill_tool_result(
     }
 
     content_box.append(&label);
+    expander.set_visible(true);
 }
 
 /// Try to build a Pango diff markup from Edit tool input JSON
@@ -269,4 +281,24 @@ pub fn create_system_message(text: &str) -> gtk::Label {
     label.set_margin_bottom(2);
     label.set_halign(gtk::Align::Center);
     label
+}
+
+/// Thinking spinner shown at the bottom of the chat while the agent is processing
+pub fn create_thinking_spinner() -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    container.set_halign(gtk::Align::Start);
+    container.set_margin_start(8);
+    container.set_margin_top(4);
+    container.set_margin_bottom(4);
+
+    let spinner = gtk::Spinner::new();
+    spinner.set_spinning(true);
+    spinner.set_size_request(16, 16);
+
+    let label = gtk::Label::new(Some("Thinking…"));
+    label.add_css_class("system-info");
+
+    container.append(&spinner);
+    container.append(&label);
+    container
 }

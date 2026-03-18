@@ -1,4 +1,5 @@
 use gtk4 as gtk;
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -6,17 +7,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::agent_process::{AgentEvent, AgentProcess, ImageAttachment, ProcessState};
+use crate::agent_process::{AgentEvent, AgentProcess, AgentSpawnConfig, ImageAttachment, ProcessState};
 use crate::agent_widgets;
+use crate::session::{AgentConfig, ChatMessage};
+
+const CONTEXT_WINDOW_MAX: u64 = 200_000;
 
 struct ToolInfo {
     content_box: gtk::Box,
+    spinner: gtk::Spinner,
+    expander: gtk::Expander,
     tool_name: String,
     tool_input: String,
 }
 
 struct PanelState {
     process: AgentProcess,
+    working_dir: std::path::PathBuf,
+    is_dark: Rc<Cell<bool>>,
     current_text_label: Option<gtk::Label>,
     current_text: String,
     current_tool_name: Option<String>,
@@ -24,6 +32,19 @@ struct PanelState {
     current_tool_use_id: Option<String>,
     pending_tools: HashMap<String, ToolInfo>,
     on_open_file: Rc<dyn Fn(&str)>,
+    thinking_spinner: Option<gtk::Box>,
+    tab_spinner: gtk::Spinner,
+    chat_history: Rc<RefCell<Vec<ChatMessage>>>,
+    agent_configs: Vec<AgentConfig>,
+    selected_profile_idx: usize,
+    session_id: Option<String>,
+    on_session_id_change: Rc<dyn Fn(Option<String>)>,
+    on_profile_change: Rc<dyn Fn(&str)>,
+    // Token & cost tracking
+    context_tokens: u64,
+    total_cost_usd: f64,
+    token_label: gtk::Label,
+    cost_label: gtk::Label,
 }
 
 struct AttachedImage {
@@ -34,7 +55,16 @@ struct AttachedImage {
 
 pub fn create_agent_panel(
     on_open_file: Rc<dyn Fn(&str)>,
-    on_theme_change: Rc<dyn Fn(bool)>,
+    is_dark: Rc<Cell<bool>>,
+    tab_spinner: gtk::Spinner,
+    working_dir: &std::path::Path,
+    title_text: &str,
+    agent_configs: Vec<AgentConfig>,
+    initial_profile: &str,
+    resume_session_id: Option<String>,
+    on_profile_change: Rc<dyn Fn(&str)>,
+    on_session_id_change: Rc<dyn Fn(Option<String>)>,
+    chat_history: Rc<RefCell<Vec<ChatMessage>>>,
 ) -> (gtk::Box, gtk::TextView) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(420);
@@ -46,46 +76,30 @@ pub fn create_agent_panel(
     header.set_margin_top(6);
     header.set_margin_bottom(6);
 
-    let title = gtk::Label::new(Some("Agent"));
+    let title = gtk::Label::new(Some(title_text));
     title.add_css_class("heading");
-    title.set_hexpand(true);
     title.set_xalign(0.0);
 
+    // Agent profile dropdown
+    let profile_names: Vec<&str> = agent_configs.iter().map(|c| c.name.as_str()).collect();
+    let string_list = gtk::StringList::new(&profile_names);
+    let dropdown = gtk::DropDown::new(Some(string_list), gtk::Expression::NONE);
+    dropdown.set_tooltip_text(Some("Agent profile"));
+
+    // Set initial selection
+    let initial_idx = agent_configs
+        .iter()
+        .position(|c| c.name == initial_profile)
+        .unwrap_or(0);
+    dropdown.set_selected(initial_idx as u32);
+
     header.append(&title);
+    header.append(&dropdown);
 
-    // Burger menu
-    let menu_btn = gtk::MenuButton::new();
-    menu_btn.set_icon_name("open-menu-symbolic");
-    menu_btn.set_tooltip_text(Some("Menu"));
-
-    let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    popover_box.set_margin_start(10);
-    popover_box.set_margin_end(10);
-    popover_box.set_margin_top(10);
-    popover_box.set_margin_bottom(10);
-
-    let theme_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let theme_label = gtk::Label::new(Some("Dark Theme"));
-    theme_label.set_hexpand(true);
-    theme_label.set_xalign(0.0);
-    let theme_switch = gtk::Switch::new();
-    theme_switch.set_active(false); // start with light theme
-    theme_row.append(&theme_label);
-    theme_row.append(&theme_switch);
-
-    popover_box.append(&theme_row);
-
-    let popover = gtk::Popover::new();
-    popover.set_child(Some(&popover_box));
-    menu_btn.set_popover(Some(&popover));
-
-    header.append(&menu_btn);
-
-    // Connect theme switch
-    theme_switch.connect_state_set(move |_, is_dark| {
-        on_theme_change(is_dark);
-        glib::Propagation::Proceed
-    });
+    let gear_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
+    gear_btn.set_tooltip_text(Some("Configure agents"));
+    gear_btn.set_has_frame(false);
+    header.append(&gear_btn);
 
     // Chat history
     let message_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -116,24 +130,6 @@ pub fn create_agent_panel(
         });
     }
 
-    // Controls
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    controls.set_margin_start(8);
-    controls.set_margin_end(8);
-    controls.set_margin_top(4);
-    controls.set_margin_bottom(2);
-
-    let pause_btn = gtk::Button::with_label("Pause");
-    pause_btn.set_sensitive(false);
-    let stop_btn = gtk::Button::with_label("Stop");
-    stop_btn.set_sensitive(false);
-    stop_btn.add_css_class("destructive-action");
-    let clear_btn = gtk::Button::with_label("Clear");
-
-    controls.append(&pause_btn);
-    controls.append(&stop_btn);
-    controls.append(&clear_btn);
-
     // Attachments preview bar (hidden when empty)
     let attach_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     attach_bar.set_margin_start(8);
@@ -144,15 +140,12 @@ pub fn create_agent_panel(
 
     let attachments: Rc<RefCell<Vec<AttachedImage>>> = Rc::new(RefCell::new(Vec::new()));
 
-    // Input area
-    let input_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    input_box.set_margin_start(8);
-    input_box.set_margin_end(8);
-    input_box.set_margin_top(2);
-    input_box.set_margin_bottom(8);
-
+    // Input area: full-width text input (no side buttons)
     let input_frame = gtk::Frame::new(None);
     input_frame.set_hexpand(true);
+    input_frame.set_margin_start(8);
+    input_frame.set_margin_end(8);
+    input_frame.set_margin_top(2);
 
     let input_view = gtk::TextView::new();
     input_view.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -172,33 +165,88 @@ pub fn create_agent_panel(
 
     input_frame.set_child(Some(&input_scroll));
 
-    // Buttons column: attach + send
-    let btn_col = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    btn_col.set_valign(gtk::Align::End);
+    // --- Bottom toolbar ---
+    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    toolbar.set_margin_start(8);
+    toolbar.set_margin_end(8);
+    toolbar.set_margin_top(2);
+    toolbar.set_margin_bottom(6);
 
+    // Left group: action buttons
     let attach_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
-    attach_btn.set_tooltip_text(Some("Attach image (or Ctrl+V to paste)"));
+    attach_btn.set_tooltip_text(Some("Attach image (Ctrl+V to paste)"));
+    attach_btn.set_has_frame(false);
 
-    let send_btn = gtk::Button::with_label("Send");
+    let pause_btn = gtk::Button::from_icon_name("media-playback-pause-symbolic");
+    pause_btn.set_tooltip_text(Some("Pause"));
+    pause_btn.set_has_frame(false);
+    pause_btn.set_sensitive(false);
+
+    let stop_btn = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+    stop_btn.set_tooltip_text(Some("Stop"));
+    stop_btn.set_has_frame(false);
+    stop_btn.set_sensitive(false);
+
+    let compact_btn = gtk::Button::from_icon_name("edit-cut-symbolic");
+    compact_btn.set_tooltip_text(Some("Compact conversation to save tokens"));
+    compact_btn.set_has_frame(false);
+
+    // Quick commands drop-up menu
+    let quick_menu = gio::Menu::new();
+    quick_menu.append(Some("Commit changes"), Some("panel.quick-commit"));
+    quick_menu.append(Some("Create GitHub PR"), Some("panel.quick-pr"));
+    quick_menu.append(Some("Update documentation"), Some("panel.quick-docs"));
+    quick_menu.append(Some("Run lint, build, tests"), Some("panel.quick-test"));
+
+    let quick_btn = gtk::MenuButton::new();
+    quick_btn.set_icon_name("view-more-symbolic");
+    quick_btn.set_tooltip_text(Some("Quick commands"));
+    quick_btn.set_has_frame(false);
+    quick_btn.set_direction(gtk::ArrowType::Up);
+    quick_btn.set_menu_model(Some(&quick_menu));
+
+    // Spacer pushes right group to end
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+
+    // Right group: info labels + send
+    let token_label = gtk::Label::new(Some("–"));
+    token_label.set_tooltip_text(Some("Context window usage"));
+    token_label.add_css_class("toolbar-info");
+
+    let cost_label = gtk::Label::new(Some("$0.00"));
+    cost_label.set_tooltip_text(Some("Session cost"));
+    cost_label.add_css_class("toolbar-info");
+
+    let send_btn = gtk::Button::from_icon_name("go-next-symbolic");
+    send_btn.set_tooltip_text(Some("Send (Ctrl+Enter)"));
     send_btn.add_css_class("suggested-action");
 
-    btn_col.append(&attach_btn);
-    btn_col.append(&send_btn);
+    // Assemble toolbar
+    toolbar.append(&attach_btn);
+    toolbar.append(&pause_btn);
+    toolbar.append(&stop_btn);
+    toolbar.append(&compact_btn);
+    toolbar.append(&quick_btn);
+    toolbar.append(&spacer);
+    toolbar.append(&token_label);
+    toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    toolbar.append(&cost_label);
+    toolbar.append(&send_btn);
 
-    input_box.append(&input_frame);
-    input_box.append(&btn_col);
-
-    // Assemble
+    // Assemble panel
     panel.append(&header);
     panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     panel.append(&scrolled);
-    panel.append(&controls);
     panel.append(&attach_bar);
-    panel.append(&input_box);
+    panel.append(&input_frame);
+    panel.append(&toolbar);
 
     // --- State ---
     let state = Rc::new(RefCell::new(PanelState {
         process: AgentProcess::new(),
+        working_dir: working_dir.to_path_buf(),
+        is_dark,
         current_text_label: None,
         current_text: String::new(),
         current_tool_name: None,
@@ -206,7 +254,125 @@ pub fn create_agent_panel(
         current_tool_use_id: None,
         pending_tools: HashMap::new(),
         on_open_file,
+        thinking_spinner: None,
+        tab_spinner,
+        chat_history,
+        agent_configs,
+        selected_profile_idx: initial_idx,
+        session_id: resume_session_id,
+        on_session_id_change,
+        on_profile_change,
+        context_tokens: 0,
+        total_cost_usd: 0.0,
+        token_label: token_label.clone(),
+        cost_label: cost_label.clone(),
     }));
+
+    // Render restored chat history
+    {
+        let s = state.borrow();
+        let history = s.chat_history.borrow();
+        let on_open = s.on_open_file.clone();
+        let dark = s.is_dark.get();
+        for msg in history.iter() {
+            match msg {
+                ChatMessage::User { text } => {
+                    message_list.append(&agent_widgets::create_user_message(text));
+                }
+                ChatMessage::AssistantText { text } => {
+                    let (container, label) = agent_widgets::create_assistant_text();
+                    let cb = on_open.clone();
+                    label.connect_activate_link(move |_label, uri| {
+                        if let Some(path) = uri.strip_prefix("file://") {
+                            cb(path);
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
+                        }
+                    });
+                    agent_widgets::update_assistant_text(&label, text, dark);
+                    message_list.append(&container);
+                }
+                ChatMessage::ToolCall {
+                    tool_name,
+                    tool_input,
+                    output,
+                    is_error,
+                } => {
+                    let input_text = extract_tool_display(tool_name, tool_input);
+                    let file_path = extract_file_path(tool_input);
+                    let (container, content_box, spinner, expander) =
+                        agent_widgets::create_tool_call(
+                            tool_name,
+                            &input_text,
+                            file_path.as_deref(),
+                            on_open.clone(),
+                        );
+                    agent_widgets::fill_tool_result(
+                        &content_box, &spinner, &expander, output, *is_error, tool_name, tool_input,
+                    );
+                    message_list.append(&container);
+                }
+                ChatMessage::System { text } => {
+                    message_list.append(&agent_widgets::create_system_message(text));
+                }
+            }
+        }
+        drop(history);
+        drop(s);
+        scroll_to_bottom(&scrolled);
+    }
+
+    // Dropdown selection change
+    {
+        let state = Rc::clone(&state);
+        dropdown.connect_selected_notify(move |dd| {
+            let idx = dd.selected() as usize;
+            let mut s = state.borrow_mut();
+            s.selected_profile_idx = idx;
+            // Clear session_id when profile changes (new conversation)
+            s.session_id = None;
+            (s.on_session_id_change)(None);
+            if let Some(cfg) = s.agent_configs.get(idx) {
+                (s.on_profile_change)(&cfg.name);
+            }
+        });
+    }
+
+    // Gear button: open agent config dialog
+    {
+        let state = Rc::clone(&state);
+        let dropdown = dropdown.clone();
+        gear_btn.connect_clicked(move |btn| {
+            let Some(window) = btn.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            let state_clone = Rc::clone(&state);
+            let dropdown_clone = dropdown.clone();
+            crate::agent_config_dialog::show(&window, move |new_configs| {
+                // Update dropdown model
+                let names: Vec<&str> = new_configs.iter().map(|c| c.name.as_str()).collect();
+                let new_model = gtk::StringList::new(&names);
+                dropdown_clone.set_model(Some(&new_model));
+
+                // Find the currently selected profile in the new list
+                let mut s = state_clone.borrow_mut();
+                let current_name = s
+                    .agent_configs
+                    .get(s.selected_profile_idx)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                let new_idx = new_configs
+                    .iter()
+                    .position(|c| c.name == current_name)
+                    .unwrap_or(0);
+
+                s.agent_configs = new_configs;
+                s.selected_profile_idx = new_idx;
+                dropdown_clone.set_selected(new_idx as u32);
+            });
+        });
+    }
 
     // --- Attach button: file chooser ---
     {
@@ -299,6 +465,13 @@ pub fn create_agent_panel(
             message_list.append(&user_widget);
             scroll_to_bottom(&scrolled);
 
+            // Record in history
+            if !text.is_empty() {
+                state.borrow().chat_history.borrow_mut().push(ChatMessage::User {
+                    text: text.clone(),
+                });
+            }
+
             // Build API image attachments
             let api_images: Vec<ImageAttachment> = images
                 .into_iter()
@@ -311,11 +484,22 @@ pub fn create_agent_panel(
             let mut s = state.borrow_mut();
 
             if !s.process.is_alive() {
-                // Spawn new process
+                // Spawn new process with selected agent profile
                 let (sender, receiver) = mpsc::channel::<AgentEvent>();
                 let receiver = Rc::new(RefCell::new(Some(receiver)));
 
-                if !s.process.spawn(sender) {
+                let spawn_config = {
+                    let cfg = s.agent_configs.get(s.selected_profile_idx);
+                    AgentSpawnConfig {
+                        system_prompt: cfg.map(|c| c.system_prompt.clone()),
+                        allowed_tools: cfg.map(|c| c.allowed_tools.clone()).unwrap_or_default(),
+                        model: cfg.and_then(|c| c.model.clone()),
+                        resume_session_id: s.session_id.clone(),
+                    }
+                };
+
+                let wd = s.working_dir.clone();
+                if !s.process.spawn(sender, &wd, &spawn_config) {
                     let err = agent_widgets::create_system_message("Failed to start claude CLI");
                     message_list.append(&err);
                     return;
@@ -350,6 +534,13 @@ pub fn create_agent_panel(
             }
 
             s.process.send_message(&text, &api_images);
+
+            // Show thinking spinner
+            let thinking = agent_widgets::create_thinking_spinner();
+            message_list.append(&thinking);
+            scroll_to_bottom(&scrolled);
+            s.thinking_spinner = Some(thinking);
+            s.tab_spinner.set_spinning(true);
             drop(s);
 
             send_btn.set_sensitive(false);
@@ -412,11 +603,13 @@ pub fn create_agent_panel(
             match s.process.state {
                 ProcessState::Running => {
                     s.process.pause();
-                    btn.set_label("Resume");
+                    btn.set_icon_name("media-playback-start-symbolic");
+                    btn.set_tooltip_text(Some("Resume"));
                 }
                 ProcessState::Paused => {
                     s.process.resume();
-                    btn.set_label("Pause");
+                    btn.set_icon_name("media-playback-pause-symbolic");
+                    btn.set_tooltip_text(Some("Pause"));
                 }
                 _ => {}
             }
@@ -431,32 +624,55 @@ pub fn create_agent_panel(
         let stop_btn_clone = stop_btn.clone();
         let message_list = message_list.clone();
         stop_btn_clone.connect_clicked(move |btn| {
-            state.borrow_mut().process.stop();
+            let mut s = state.borrow_mut();
+            s.process.stop();
+            remove_thinking_spinner(&mut s);
+            s.tab_spinner.set_spinning(false);
+            s.chat_history.borrow_mut().push(ChatMessage::System {
+                text: "⏹ Stopped".to_string(),
+            });
+            drop(s);
             let info = agent_widgets::create_system_message("⏹ Stopped");
             message_list.append(&info);
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
-            pause_btn.set_label("Pause");
+            pause_btn.set_icon_name("media-playback-pause-symbolic");
+            pause_btn.set_tooltip_text(Some("Pause"));
             btn.set_sensitive(false);
         });
     }
 
-    // Clear button
+    // Compact button: sends /compact to Claude CLI
     {
-        let state = Rc::clone(&state);
-        let send_btn = send_btn.clone();
-        let pause_btn = pause_btn.clone();
-        let stop_btn = stop_btn.clone();
-        clear_btn.connect_clicked(move |_| {
-            state.borrow_mut().process.stop();
-            while let Some(child) = message_list.first_child() {
-                message_list.remove(&child);
-            }
-            send_btn.set_sensitive(true);
-            pause_btn.set_sensitive(false);
-            pause_btn.set_label("Pause");
-            stop_btn.set_sensitive(false);
+        let do_send_compact = do_send.clone();
+        let input_view_compact = input_view.clone();
+        compact_btn.connect_clicked(move |_| {
+            input_view_compact.buffer().set_text("/compact");
+            do_send_compact();
         });
+    }
+
+    // Quick command actions
+    {
+        let action_group = gio::SimpleActionGroup::new();
+        let commands: &[(&str, &str)] = &[
+            ("quick-commit", "commit all changes with a meaningful message"),
+            ("quick-pr", "create a pull request for current branch"),
+            ("quick-docs", "update documentation to reflect recent changes"),
+            ("quick-test", "run lint, build, and tests, fix any errors"),
+        ];
+        for (action_name, prompt_text) in commands {
+            let action = gio::SimpleAction::new(action_name, None);
+            let iv = input_view.clone();
+            let ds = do_send.clone();
+            let text = prompt_text.to_string();
+            action.connect_activate(move |_, _| {
+                iv.buffer().set_text(&text);
+                ds();
+            });
+            action_group.add_action(&action);
+        }
+        panel.insert_action_group("panel", Some(&action_group));
     }
 
     (panel, input_view)
@@ -529,8 +745,13 @@ fn handle_event(
     event: AgentEvent,
 ) {
     match event {
-        AgentEvent::System { .. } => {
-            // Session started, nothing visible needed
+        AgentEvent::System { session_id, .. } => {
+            // Capture session_id for continuation
+            if let Some(ref id) = session_id {
+                let mut s = state.borrow_mut();
+                s.session_id = Some(id.clone());
+                (s.on_session_id_change)(Some(id.clone()));
+            }
         }
 
         AgentEvent::StreamEvent { event: ev } => {
@@ -563,11 +784,20 @@ fn handle_event(
                 };
                 agent_widgets::fill_tool_result(
                     &info.content_box,
+                    &info.spinner,
+                    &info.expander,
                     output,
                     result.is_error,
                     &info.tool_name,
                     &info.tool_input,
                 );
+                // Record in history
+                s.chat_history.borrow_mut().push(ChatMessage::ToolCall {
+                    tool_name: info.tool_name.clone(),
+                    tool_input: info.tool_input.clone(),
+                    output: output.to_string(),
+                    is_error: result.is_error,
+                });
             }
             scroll_to_bottom(scrolled);
         }
@@ -580,17 +810,43 @@ fn handle_event(
             let msg = if is_error {
                 "✗ Error".to_string()
             } else {
-                format!("✓ Done (${:.4})", total_cost_usd)
+                format!("✓ Done (${:.2})", total_cost_usd)
             };
             let info = agent_widgets::create_system_message(&msg);
             message_list.append(&info);
 
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
-            pause_btn.set_label("Pause");
+            pause_btn.set_icon_name("media-playback-pause-symbolic");
+            pause_btn.set_tooltip_text(Some("Pause"));
             stop_btn.set_sensitive(false);
 
             let mut s = state.borrow_mut();
+            remove_thinking_spinner(&mut s);
+            s.tab_spinner.set_spinning(false);
+
+            // Update cost display
+            s.total_cost_usd = total_cost_usd;
+            s.cost_label.set_text(&format!("${:.2}", total_cost_usd));
+
+            // Stop any tool spinners that never received a result
+            let orphaned: Vec<ToolInfo> = s.pending_tools.drain().map(|(_, v)| v).collect();
+            for ti in &orphaned {
+                ti.spinner.set_spinning(false);
+                ti.spinner.set_visible(false);
+            }
+            {
+                let mut hist = s.chat_history.borrow_mut();
+                for ti in orphaned {
+                    hist.push(ChatMessage::ToolCall {
+                        tool_name: ti.tool_name,
+                        tool_input: ti.tool_input,
+                        output: String::new(),
+                        is_error: false,
+                    });
+                }
+                hist.push(ChatMessage::System { text: msg.clone() });
+            }
             s.current_text_label = None;
             s.current_text.clear();
             s.process.state = ProcessState::Idle;
@@ -602,6 +858,16 @@ fn handle_event(
     }
 }
 
+fn remove_thinking_spinner(state: &mut PanelState) {
+    if let Some(spinner) = state.thinking_spinner.take() {
+        if let Some(parent) = spinner.parent() {
+            if let Some(parent_box) = parent.downcast_ref::<gtk::Box>() {
+                parent_box.remove(&spinner);
+            }
+        }
+    }
+}
+
 fn handle_stream_event(
     state: &Rc<RefCell<PanelState>>,
     message_list: &gtk::Box,
@@ -609,8 +875,35 @@ fn handle_stream_event(
     ev: &crate::agent_process::StreamEventData,
 ) {
     match ev.event_type.as_str() {
+        "message_start" => {
+            // Extract token usage from message.usage.input_tokens
+            if let Some(ref msg) = ev.message {
+                if let Some(usage) = msg.get("usage") {
+                    if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        let mut s = state.borrow_mut();
+                        s.context_tokens = input_tokens;
+                        let pct = (input_tokens as f64 / CONTEXT_WINDOW_MAX as f64 * 100.0) as u32;
+                        s.token_label.set_text(&format!("{} ({}%)", format_token_count(input_tokens), pct));
+                    }
+                }
+            }
+        }
+
+        "message_delta" => {
+            // Update token display with output_tokens added
+            if let Some(ref usage) = ev.usage {
+                if usage.output_tokens > 0 {
+                    let s = state.borrow();
+                    let total = s.context_tokens + usage.output_tokens;
+                    let pct = (total as f64 / CONTEXT_WINDOW_MAX as f64 * 100.0) as u32;
+                    s.token_label.set_text(&format!("{} ({}%)", format_token_count(total), pct));
+                }
+            }
+        }
+
         "content_block_start" => {
             let mut s = state.borrow_mut();
+            remove_thinking_spinner(&mut s);
             if let Some(ref cb) = ev.content_block {
                 match cb.block_type.as_str() {
                     "text" => {
@@ -647,7 +940,7 @@ fn handle_stream_event(
                         if let Some(ref text) = delta.text {
                             s.current_text.push_str(text);
                             if let Some(ref label) = s.current_text_label {
-                                agent_widgets::update_assistant_text(label, &s.current_text);
+                                agent_widgets::update_assistant_text(label, &s.current_text, s.is_dark.get());
                             }
                         }
                     }
@@ -670,13 +963,13 @@ fn handle_stream_event(
                 let input_text = extract_tool_display(&tool_name, &s.current_tool_input);
                 let file_path = extract_file_path(&s.current_tool_input);
                 let on_open = s.on_open_file.clone();
-                let (expander, content_box) = agent_widgets::create_tool_call(
+                let (container, content_box, spinner, expander) = agent_widgets::create_tool_call(
                     &tool_name,
                     &input_text,
                     file_path.as_deref(),
                     on_open,
                 );
-                message_list.append(&expander);
+                message_list.append(&container);
 
                 let tool_input_snapshot = s.current_tool_input.clone();
                 if let Some(id) = s.current_tool_use_id.take() {
@@ -684,12 +977,19 @@ fn handle_stream_event(
                         id,
                         ToolInfo {
                             content_box,
+                            spinner,
+                            expander,
                             tool_name,
                             tool_input: tool_input_snapshot,
                         },
                     );
                 }
                 s.current_tool_input.clear();
+            } else if !s.current_text.is_empty() {
+                // Text block completed — record in history
+                s.chat_history.borrow_mut().push(ChatMessage::AssistantText {
+                    text: s.current_text.clone(),
+                });
             }
             // Clear text tracking (block is done)
             s.current_text_label = None;
@@ -699,6 +999,17 @@ fn handle_stream_event(
         }
 
         _ => {}
+    }
+}
+
+/// Format token count as human-readable string (e.g., "25K", "1.2M", "500")
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{}K", tokens / 1_000)
+    } else {
+        format!("{}", tokens)
     }
 }
 

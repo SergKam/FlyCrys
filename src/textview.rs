@@ -39,6 +39,12 @@ pub fn create_text_view() -> (gtk::Box, gtk::TextView, gtk::Label) {
     (vbox, text_view, path_label)
 }
 
+/// Reset the text view to the initial "no file selected" state.
+pub fn clear_view(text_view: &gtk::TextView, path_label: &gtk::Label) {
+    text_view.buffer().set_text("");
+    path_label.set_text("Select a file to view");
+}
+
 pub fn load_file(
     text_view: &gtk::TextView,
     path_label: &gtk::Label,
