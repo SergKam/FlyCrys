@@ -13,21 +13,89 @@ use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-const APP_ID: &str = "com.flycristal.app";
+const APP_ID: &str = "com.flycrys.app";
+
+fn light_css() -> &'static str {
+    r#"
+    .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
+    .tool-call {
+        background-color: #ffffff;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        padding: 6px;
+    }
+    .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
+    .error-text { color: @error_color; }
+    .monospace { font-family: monospace; font-size: 0.9em; }
+    .code-view text { background-color: #ffffff; color: #333333; }
+    .image-thumb { border-radius: 4px; }
+    .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
+    button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
+    listview.file-tree > row:selected { background-color: #3584e4; color: #ffffff; }
+    listview.file-tree > row:selected:hover { background-color: #3584e4; color: #ffffff; }
+    listview.file-tree > row:hover:not(:selected) { background-color: #d4e4f7; }
+    "#
+}
+
+fn dark_css() -> &'static str {
+    r#"
+    .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
+    .tool-call {
+        background-color: #383838;
+        border: 1px solid #555555;
+        border-radius: 6px;
+        padding: 6px;
+    }
+    .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
+    .error-text { color: @error_color; }
+    .monospace { font-family: monospace; font-size: 0.9em; }
+    .code-view text { background-color: #2d2d2d; color: #d3d0c8; }
+    .image-thumb { border-radius: 4px; }
+    .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
+    button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
+    listview.file-tree > row:selected { background-color: #3584e4; color: #ffffff; }
+    listview.file-tree > row:selected:hover { background-color: #3584e4; color: #ffffff; }
+    listview.file-tree > row:hover:not(:selected) { background-color: rgba(53, 132, 228, 0.15); }
+    "#
+}
 
 fn main() -> glib::ExitCode {
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .build();
 
+    app.connect_startup(|_app| {
+        // Add bundled icons to the default icon theme
+        let icon_theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        // Check next to the binary first (installed), then project root (dev)
+        let candidates = [
+            exe_dir.as_ref().map(|d| d.join("icons")),
+            exe_dir.as_ref().map(|d| d.join("../icons")),
+            Some(std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/icons"))),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            if candidate.is_dir() {
+                icon_theme.add_search_path(&candidate);
+                break;
+            }
+        }
+    });
+
     app.connect_activate(build_ui);
     app.run()
 }
 
 fn build_ui(app: &gtk::Application) {
+    // Theme state
+    let is_dark = Rc::new(Cell::new(false));
+    let current_file = Rc::new(RefCell::new(String::new()));
+
     // Left pane: file tree
     let (tree_scroll, list_view, selection) = tree::create_file_tree();
 
@@ -57,6 +125,8 @@ fn build_ui(app: &gtk::Application) {
         #[weak] selection,
         #[weak] text_view,
         #[weak] path_label,
+        #[strong] current_file,
+        #[strong] is_dark,
         move |_view, position| {
             let Some(item) = selection.item(position) else {
                 return;
@@ -67,7 +137,10 @@ fn build_ui(app: &gtk::Application) {
             if entry.is_dir() {
                 row.set_expanded(!row.is_expanded());
             } else {
-                textview::load_file(&text_view, &path_label, &entry.path());
+                let path = entry.path();
+                let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
+                textview::load_file(&text_view, &path_label, &path, theme);
+                *current_file.borrow_mut() = path;
             }
         }
     ));
@@ -119,8 +192,61 @@ fn build_ui(app: &gtk::Application) {
     ));
     list_view.add_controller(right_click);
 
-    // Agent panel (right side)
-    let (agent_panel, agent_input) = agent_panel::create_agent_panel();
+    // CSS
+    let css = gtk::CssProvider::new();
+    css.load_from_string(light_css());
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().unwrap(),
+        &css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    // Theme change callback
+    let on_theme_change: Rc<dyn Fn(bool)> = {
+        let css = css.clone();
+        let text_view = text_view.clone();
+        let current_file = Rc::clone(&current_file);
+        let is_dark = Rc::clone(&is_dark);
+        Rc::new(move |dark: bool| {
+            is_dark.set(dark);
+            css.load_from_string(if dark { dark_css() } else { light_css() });
+
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_application_prefer_dark_theme(dark);
+            }
+
+            // Re-highlight current file
+            let file_path = current_file.borrow().clone();
+            if !file_path.is_empty() {
+                let theme = if dark { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
+                let buffer = text_view.buffer();
+                let content = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string();
+                if highlight::is_highlightable(&file_path) && !content.is_empty() {
+                    highlight::highlight_buffer_with_theme(
+                        &buffer, &content, &file_path, theme,
+                    );
+                }
+            }
+        })
+    };
+
+    // Agent panel (right side) — with callback to open files in viewer + tree
+    let on_open_file: Rc<dyn Fn(&str)> = {
+        let text_view = text_view.clone();
+        let path_label = path_label.clone();
+        let selection = selection.clone();
+        let current_file = Rc::clone(&current_file);
+        let is_dark = Rc::clone(&is_dark);
+        Rc::new(move |file_path: &str| {
+            let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
+            textview::load_file(&text_view, &path_label, file_path, theme);
+            *current_file.borrow_mut() = file_path.to_string();
+            select_file_in_tree(&selection, file_path);
+        })
+    };
+    let (agent_panel, agent_input) = agent_panel::create_agent_panel(on_open_file, on_theme_change);
 
     let outer_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
     outer_paned.set_start_child(Some(&paned));
@@ -131,28 +257,11 @@ fn build_ui(app: &gtk::Application) {
     outer_paned.set_shrink_start_child(false);
     outer_paned.set_shrink_end_child(false);
 
-    // CSS
-    let css = gtk::CssProvider::new();
-    css.load_from_string(
-        r#"
-        .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
-        .tool-call { background: alpha(@warning_bg_color, 0.08); border-radius: 4px; padding: 4px; }
-        .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
-        .error-text { color: @error_color; }
-        .monospace { font-family: monospace; font-size: 0.9em; }
-        .code-view text { background-color: #2d2d2d; color: #d3d0c8; }
-        "#,
-    );
-    gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().unwrap(),
-        &css,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-
     // Window
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("FlyCristal")
+        .title("FlyCrys")
+        .icon_name(APP_ID)
         .default_width(1400)
         .default_height(800)
         .child(&outer_paned)
@@ -287,4 +396,42 @@ fn append_path_to_input(input: &gtk::TextView, path: &str) {
         " "
     };
     buffer.insert(&mut end, &format!("{prefix}{path}"));
+}
+
+/// Navigate the file tree to select a file, expanding parent directories as needed
+fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
+    for _pass in 0..30 {
+        let n = selection.n_items();
+        let mut expanded_any = false;
+        for i in 0..n {
+            let Some(item) = selection.item(i) else {
+                continue;
+            };
+            let Some(row) = item.downcast_ref::<gtk::TreeListRow>() else {
+                continue;
+            };
+            let Some(entry) = row.item().and_downcast::<FileEntry>() else {
+                continue;
+            };
+
+            if entry.path() == target_path {
+                selection.set_selected(i);
+                return;
+            }
+
+            let entry_path = entry.path();
+            if entry.is_dir()
+                && !row.is_expanded()
+                && target_path.starts_with(&entry_path)
+                && target_path.as_bytes().get(entry_path.len()) == Some(&b'/')
+            {
+                row.set_expanded(true);
+                expanded_any = true;
+                break; // Restart scan since indices changed
+            }
+        }
+        if !expanded_any {
+            break;
+        }
+    }
 }

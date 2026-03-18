@@ -1,4 +1,4 @@
-# AGENTS.md - FlyCristal
+# AGENTS.md - FlyCrys
 
 Instructions for AI agents working on this codebase.
 

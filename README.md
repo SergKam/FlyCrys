@@ -1,4 +1,4 @@
-# FlyCristal
+# FlyCrys
 
 A native GTK4 file viewer and AI agent interface built in Rust. GUI frontend for Claude Code.
 

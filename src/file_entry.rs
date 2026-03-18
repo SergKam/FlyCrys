@@ -22,7 +22,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for FileEntry {
-        const NAME: &'static str = "FlyCristalFileEntry";
+        const NAME: &'static str = "FlyCrysFileEntry";
         type Type = super::FileEntry;
         type ParentType = glib::Object;
     }

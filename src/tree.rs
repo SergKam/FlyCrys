@@ -73,6 +73,7 @@ pub fn create_file_tree() -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSel
 
     let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
     list_view.set_single_click_activate(true);
+    list_view.add_css_class("file-tree");
 
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
