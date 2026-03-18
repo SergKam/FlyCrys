@@ -1,20 +1,42 @@
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::file_entry::FileEntry;
 
-pub fn create_file_tree() -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSelection) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
-    let root_store = create_directory_list(&cwd);
+/// Shared map of directory path → ListStore, so the watcher can refresh stores.
+pub type DirStoreMap = Rc<RefCell<HashMap<PathBuf, gio::ListStore>>>;
 
-    let tree_model = gtk::TreeListModel::new(root_store, false, false, |item| {
+struct DirEntry {
+    name: String,
+    path: String,
+    icon: &'static str,
+    is_dir: bool,
+}
+
+pub fn create_file_tree(
+    root_dir: &Path,
+) -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSelection, DirStoreMap) {
+    let dir_stores: DirStoreMap = Rc::new(RefCell::new(HashMap::new()));
+
+    let root_store = create_directory_list(root_dir);
+    dir_stores
+        .borrow_mut()
+        .insert(root_dir.to_path_buf(), root_store.clone());
+
+    let stores = dir_stores.clone();
+    let tree_model = gtk::TreeListModel::new(root_store, false, false, move |item| {
         let entry = item.downcast_ref::<FileEntry>()?;
         if !entry.is_dir() {
             return None;
         }
-        let store = create_directory_list(Path::new(&entry.path()));
+        let path = PathBuf::from(entry.path());
+        let store = create_directory_list(&path);
+        stores.borrow_mut().insert(path, store.clone());
         Some(store.upcast())
     });
 
@@ -72,7 +94,6 @@ pub fn create_file_tree() -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSel
     });
 
     let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
-    list_view.set_single_click_activate(true);
     list_view.add_css_class("file-tree");
 
     let scrolled = gtk::ScrolledWindow::builder()
@@ -81,20 +102,67 @@ pub fn create_file_tree() -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSel
         .child(&list_view)
         .build();
 
-    (scrolled, list_view, selection)
+    (scrolled, list_view, selection, dir_stores)
 }
 
-fn create_directory_list(dir: &Path) -> gio::ListStore {
-    let store = gio::ListStore::new::<FileEntry>();
-
-    let entries = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return store,
+/// Refresh a directory's ListStore to match the current filesystem state.
+/// Removes deleted items, inserts new items at the correct sorted position.
+/// Existing items are untouched so TreeListModel preserves their expand state.
+pub fn refresh_directory(store: &gio::ListStore, dir: &Path, dir_stores: &DirStoreMap) {
+    let Some(desired) = read_directory_entries(dir) else {
+        // Directory no longer exists — clear store and unregister
+        while store.n_items() > 0 {
+            store.remove(0);
+        }
+        dir_stores.borrow_mut().remove(&dir.to_path_buf());
+        return;
     };
 
-    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    let desired_paths: HashSet<String> = desired.iter().map(|e| e.path.clone()).collect();
 
-    entries.sort_by(|a, b| {
+    // Remove items no longer on disk (scan backwards to keep indices valid)
+    let mut i = store.n_items();
+    while i > 0 {
+        i -= 1;
+        if let Some(entry) = store.item(i).and_downcast::<FileEntry>() {
+            if !desired_paths.contains(&entry.path()) {
+                if entry.is_dir() {
+                    dir_stores.borrow_mut().remove(&PathBuf::from(entry.path()));
+                }
+                store.remove(i);
+            }
+        }
+    }
+
+    // Build set of paths still in the store after removals
+    let existing_paths: HashSet<String> = (0..store.n_items())
+        .filter_map(|i| store.item(i).and_downcast::<FileEntry>())
+        .map(|e| e.path())
+        .collect();
+
+    // Walk the desired order, inserting missing items at the correct position.
+    // Existing items are already in the same relative order (same sort).
+    let mut store_idx = 0u32;
+    for de in &desired {
+        if existing_paths.contains(&de.path) {
+            store_idx += 1;
+        } else {
+            store.insert(
+                store_idx,
+                &FileEntry::new(&de.name, &de.path, de.icon, de.is_dir),
+            );
+            store_idx += 1;
+        }
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+fn read_directory_entries(dir: &Path) -> Option<Vec<DirEntry>> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut raw: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+
+    raw.sort_by(|a, b| {
         let a_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
         let b_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
         b_dir.cmp(&a_dir).then_with(|| {
@@ -104,29 +172,34 @@ fn create_directory_list(dir: &Path) -> gio::ListStore {
         })
     });
 
-    for entry in entries {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
+    Some(
+        raw.into_iter()
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy().to_string();
+                if name_str.starts_with('.') {
+                    return None;
+                }
+                let path = entry.path();
+                let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                let icon = if is_dir { "folder" } else { "text-x-generic" };
+                Some(DirEntry {
+                    name: name_str,
+                    path: path.to_string_lossy().to_string(),
+                    icon,
+                    is_dir,
+                })
+            })
+            .collect(),
+    )
+}
 
-        if name_str.starts_with('.') {
-            continue;
+fn create_directory_list(dir: &Path) -> gio::ListStore {
+    let store = gio::ListStore::new::<FileEntry>();
+    if let Some(entries) = read_directory_entries(dir) {
+        for e in entries {
+            store.append(&FileEntry::new(&e.name, &e.path, e.icon, e.is_dir));
         }
-
-        let path = entry.path();
-        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        let icon = if is_dir {
-            "folder"
-        } else {
-            "text-x-generic"
-        };
-
-        store.append(&FileEntry::new(
-            &name_str,
-            &path.to_string_lossy(),
-            icon,
-            is_dir,
-        ));
     }
-
     store
 }

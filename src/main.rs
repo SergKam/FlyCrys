@@ -1,20 +1,12 @@
-mod agent_panel;
-mod agent_process;
-mod agent_widgets;
-mod file_entry;
-mod highlight;
-mod markdown;
-mod terminal;
-mod textview;
-mod tree;
-
-use file_entry::FileEntry;
 use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+use flycrys::session::{self, AppConfig, WorkspaceConfig};
+use flycrys::workspace::Workspace;
 
 const APP_ID: &str = "com.flycrys.app";
 
@@ -34,9 +26,13 @@ fn light_css() -> &'static str {
     .image-thumb { border-radius: 4px; }
     .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
     button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
-    listview.file-tree > row:selected { background-color: #3584e4; color: #ffffff; }
-    listview.file-tree > row:selected:hover { background-color: #3584e4; color: #ffffff; }
-    listview.file-tree > row:hover:not(:selected) { background-color: #d4e4f7; }
+    listview.file-tree > row:selected {
+        border-left: 3px solid #3584e4;
+        font-weight: bold;
+    }
+    paned > separator { background-color: #c0c0c0; min-width: 2px; min-height: 2px; }
+    notebook header tabs tab { min-height: 0; padding: 4px 8px; }
+    .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
     "#
 }
 
@@ -56,9 +52,13 @@ fn dark_css() -> &'static str {
     .image-thumb { border-radius: 4px; }
     .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
     button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
-    listview.file-tree > row:selected { background-color: #3584e4; color: #ffffff; }
-    listview.file-tree > row:selected:hover { background-color: #3584e4; color: #ffffff; }
-    listview.file-tree > row:hover:not(:selected) { background-color: rgba(53, 132, 228, 0.15); }
+    listview.file-tree > row:selected {
+        border-left: 3px solid #3584e4;
+        font-weight: bold;
+    }
+    paned > separator { background-color: #555555; min-width: 2px; min-height: 2px; }
+    notebook header tabs tab { min-height: 0; padding: 4px 8px; }
+    .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
     "#
 }
 
@@ -68,12 +68,10 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.connect_startup(|_app| {
-        // Add bundled icons to the default icon theme
         let icon_theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-        // Check next to the binary first (installed), then project root (dev)
         let candidates = [
             exe_dir.as_ref().map(|d| d.join("icons")),
             exe_dir.as_ref().map(|d| d.join("../icons")),
@@ -91,347 +89,398 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+/// Shared app-level state
+struct AppState {
+    config: AppConfig,
+    workspaces: Vec<Workspace>,
+}
+
 fn build_ui(app: &gtk::Application) {
+    session::ensure_default_agents();
+    let mut app_config = session::load_app_config();
+
     // Theme state
-    let is_dark = Rc::new(Cell::new(false));
-    let current_file = Rc::new(RefCell::new(String::new()));
-
-    // Left pane: file tree
-    let (tree_scroll, list_view, selection) = tree::create_file_tree();
-
-    // Right pane top: text view
-    let (text_container, text_view, path_label) = textview::create_text_view();
-
-    // Right pane bottom: terminal (initially hidden)
-    let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
-    terminal_container.set_visible(false);
-
-    let right_paned = gtk::Paned::new(gtk::Orientation::Vertical);
-    right_paned.set_start_child(Some(&text_container));
-    right_paned.set_end_child(Some(&terminal_container));
-    right_paned.set_resize_start_child(true);
-    right_paned.set_resize_end_child(true);
-    right_paned.set_shrink_start_child(false);
-    right_paned.set_shrink_end_child(false);
-
-    // Main horizontal split
-    let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-    paned.set_position(300);
-    paned.set_start_child(Some(&tree_scroll));
-    paned.set_end_child(Some(&right_paned));
-
-    // Single-click: open files / toggle directories
-    list_view.connect_activate(glib::clone!(
-        #[weak] selection,
-        #[weak] text_view,
-        #[weak] path_label,
-        #[strong] current_file,
-        #[strong] is_dark,
-        move |_view, position| {
-            let Some(item) = selection.item(position) else {
-                return;
-            };
-            let row = item.downcast_ref::<gtk::TreeListRow>().unwrap();
-            let entry = row.item().and_downcast::<FileEntry>().unwrap();
-
-            if entry.is_dir() {
-                row.set_expanded(!row.is_expanded());
-            } else {
-                let path = entry.path();
-                let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                textview::load_file(&text_view, &path_label, &path, theme);
-                *current_file.borrow_mut() = path;
-            }
-        }
-    ));
-
-    // --- Right-click context menu ---
-    let ctx_path: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    let ctx_is_dir: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    let menu = gio::Menu::new();
-    menu.append(Some("Copy Path"), Some("win.copy-path"));
-    menu.append(Some("Add to Chat"), Some("win.add-to-chat"));
-    menu.append(Some("Open Terminal Here"), Some("win.open-terminal-here"));
-
-    let popover = gtk::PopoverMenu::from_model(Some(&menu));
-    popover.set_parent(&list_view);
-    popover.set_has_arrow(false);
-
-    let right_click = gtk::GestureClick::new();
-    right_click.set_button(3);
-    right_click.connect_pressed(glib::clone!(
-        #[weak] list_view,
-        #[weak] popover,
-        #[strong] ctx_path,
-        #[strong] ctx_is_dir,
-        move |_gesture, _n_press, x, y| {
-            // Walk up from the picked widget to find a TreeExpander
-            let Some(widget) = list_view.pick(x, y, gtk::PickFlags::DEFAULT) else {
-                return;
-            };
-            let mut current = Some(widget);
-            while let Some(w) = current {
-                if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                    if let Some(item) = expander.item() {
-                        if let Some(entry) = item.downcast_ref::<FileEntry>() {
-                            *ctx_path.borrow_mut() = entry.path();
-                            *ctx_is_dir.borrow_mut() = entry.is_dir();
-
-                            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-                                x as i32, y as i32, 1, 1,
-                            )));
-                            popover.popup();
-                        }
-                    }
-                    return;
-                }
-                current = w.parent();
-            }
-        }
-    ));
-    list_view.add_controller(right_click);
+    let is_dark = Rc::new(Cell::new(app_config.is_dark));
 
     // CSS
     let css = gtk::CssProvider::new();
-    css.load_from_string(light_css());
+    css.load_from_string(if app_config.is_dark { dark_css() } else { light_css() });
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().unwrap(),
         &css,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    // Theme change callback
+    if app_config.is_dark {
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_application_prefer_dark_theme(true);
+        }
+    }
+
+    // Notebook for tabs
+    let notebook = gtk::Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.set_show_border(false);
+    notebook.popup_enable();
+
+    let app_state = Rc::new(RefCell::new(AppState {
+        config: app_config.clone(),
+        workspaces: Vec::new(),
+    }));
+
+    // Theme change callback (shared across all workspaces)
     let on_theme_change: Rc<dyn Fn(bool)> = {
         let css = css.clone();
-        let text_view = text_view.clone();
-        let current_file = Rc::clone(&current_file);
         let is_dark = Rc::clone(&is_dark);
+        let app_state = Rc::clone(&app_state);
         Rc::new(move |dark: bool| {
             is_dark.set(dark);
             css.load_from_string(if dark { dark_css() } else { light_css() });
-
             if let Some(settings) = gtk::Settings::default() {
                 settings.set_gtk_application_prefer_dark_theme(dark);
             }
-
-            // Re-highlight current file
-            let file_path = current_file.borrow().clone();
-            if !file_path.is_empty() {
-                let theme = if dark { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                let buffer = text_view.buffer();
-                let content = buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
-                    .to_string();
-                if highlight::is_highlightable(&file_path) && !content.is_empty() {
-                    highlight::highlight_buffer_with_theme(
-                        &buffer, &content, &file_path, theme,
-                    );
-                }
+            app_state.borrow_mut().config.is_dark = dark;
+            // Re-highlight the current file in every workspace
+            let rehighlighters: Vec<_> = app_state
+                .borrow()
+                .workspaces
+                .iter()
+                .map(|ws| ws.on_theme_rehighlight.clone())
+                .collect();
+            for rh in &rehighlighters {
+                rh(dark);
             }
         })
     };
 
-    // Agent panel (right side) — with callback to open files in viewer + tree
-    let on_open_file: Rc<dyn Fn(&str)> = {
-        let text_view = text_view.clone();
-        let path_label = path_label.clone();
-        let selection = selection.clone();
-        let current_file = Rc::clone(&current_file);
-        let is_dark = Rc::clone(&is_dark);
-        Rc::new(move |file_path: &str| {
-            let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-            textview::load_file(&text_view, &path_label, file_path, theme);
-            *current_file.borrow_mut() = file_path.to_string();
-            select_file_in_tree(&selection, file_path);
-        })
-    };
-    let (agent_panel, agent_input) = agent_panel::create_agent_panel(on_open_file, on_theme_change);
+    // Burger menu on the left side of the tab bar
+    {
+        let menu_btn = gtk::MenuButton::new();
+        menu_btn.set_icon_name("open-menu-symbolic");
+        menu_btn.set_tooltip_text(Some("Menu"));
+        menu_btn.set_has_frame(false);
 
-    let outer_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-    outer_paned.set_start_child(Some(&paned));
-    outer_paned.set_end_child(Some(&agent_panel));
-    outer_paned.set_position(980);
-    outer_paned.set_resize_start_child(true);
-    outer_paned.set_resize_end_child(false);
-    outer_paned.set_shrink_start_child(false);
-    outer_paned.set_shrink_end_child(false);
+        let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        popover_box.set_margin_start(10);
+        popover_box.set_margin_end(10);
+        popover_box.set_margin_top(10);
+        popover_box.set_margin_bottom(10);
+
+        // Dark Theme toggle
+        let theme_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let theme_label = gtk::Label::new(Some("Dark Theme"));
+        theme_label.set_hexpand(true);
+        theme_label.set_xalign(0.0);
+        let theme_switch = gtk::Switch::new();
+        theme_switch.set_active(is_dark.get());
+        theme_row.append(&theme_label);
+        theme_row.append(&theme_switch);
+        popover_box.append(&theme_row);
+
+        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // About button
+        let about_btn = gtk::Button::with_label("About");
+        about_btn.set_has_frame(false);
+        popover_box.append(&about_btn);
+
+        let popover = gtk::Popover::new();
+        popover.set_child(Some(&popover_box));
+        menu_btn.set_popover(Some(&popover));
+
+        notebook.set_action_widget(&menu_btn, gtk::PackType::Start);
+
+        // Theme switch handler
+        {
+            let on_theme_change = Rc::clone(&on_theme_change);
+            theme_switch.connect_state_set(move |_, dark| {
+                on_theme_change(dark);
+                glib::Propagation::Proceed
+            });
+        }
+
+        // About dialog handler
+        {
+            let popover = popover.clone();
+            about_btn.connect_clicked(move |btn| {
+                popover.popdown();
+
+                let claude_version = std::process::Command::new("claude")
+                    .arg("--version")
+                    .output()
+                    .ok()
+                    .and_then(|out| String::from_utf8(out.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "not found".to_string());
+
+                let about = gtk::AboutDialog::builder()
+                    .program_name("FlyCrys")
+                    .version(env!("CARGO_PKG_VERSION"))
+                    .comments(format!(
+                        "GTK4 workspace with AI agent integration\n\nClaude CLI: {}",
+                        claude_version
+                    ))
+                    .license_type(gtk::License::MitX11)
+                    .modal(true)
+                    .build();
+
+                if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
+                    about.set_transient_for(Some(&window));
+                }
+                about.present();
+            });
+        }
+    }
+
+    // Load existing workspaces or show folder chooser
+    let workspace_configs: Vec<WorkspaceConfig> = app_config
+        .workspace_ids
+        .iter()
+        .filter_map(|id| session::load_workspace_config(id))
+        .collect();
+
+    if workspace_configs.is_empty() {
+        // No saved session — create one workspace for cwd
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| "/".into())
+            .to_string_lossy()
+            .to_string();
+        let ws_config = WorkspaceConfig::new(&cwd);
+        app_config.workspace_ids.push(ws_config.id.clone());
+        app_config.active_tab = 0;
+
+        let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
+        let label = create_tab_label(
+            &ws.config.borrow().tab_label(),
+            &ws.tab_spinner,
+            &notebook,
+            &ws.root,
+            &app_state,
+        );
+        notebook.append_page(&ws.root, Some(&label));
+        app_state.borrow_mut().workspaces.push(ws);
+    } else {
+        let labels = session::dedup_labels(&workspace_configs);
+        for (i, ws_config) in workspace_configs.into_iter().enumerate() {
+            let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
+            let label = create_tab_label(
+                &labels[i],
+                &ws.tab_spinner,
+                &notebook,
+                &ws.root,
+                &app_state,
+            );
+            notebook.append_page(&ws.root, Some(&label));
+            app_state.borrow_mut().workspaces.push(ws);
+        }
+    }
+
+    // "+" button to add new workspace
+    let add_btn = gtk::Button::from_icon_name("list-add-symbolic");
+    add_btn.set_tooltip_text(Some("New workspace"));
+    add_btn.set_has_frame(false);
+    notebook.set_action_widget(&add_btn, gtk::PackType::End);
+
+    add_btn.connect_clicked(glib::clone!(
+        #[weak] notebook,
+        #[strong] app_state,
+        #[strong] is_dark,
+        move |btn| {
+            let dialog = gtk::FileDialog::builder()
+                .title("Open Folder for New Workspace")
+                .modal(true)
+                .build();
+
+            let window = btn.root().and_downcast::<gtk::Window>();
+            let notebook = notebook.clone();
+            let app_state = Rc::clone(&app_state);
+            let is_dark = Rc::clone(&is_dark);
+
+            dialog.select_folder(
+                window.as_ref(),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if let Ok(folder) = result {
+                        if let Some(path) = folder.path() {
+                            let dir = path.to_string_lossy().to_string();
+                            let ws_config = WorkspaceConfig::new(&dir);
+
+                            let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
+                            let label_text = ws.config.borrow().tab_label();
+                            let label = create_tab_label(
+                                &label_text,
+                                &ws.tab_spinner,
+                                &notebook,
+                                &ws.root,
+                                &app_state,
+                            );
+                            let page_num = notebook.append_page(&ws.root, Some(&label));
+                            notebook.set_current_page(Some(page_num as u32));
+                            notebook.set_tab_reorderable(&ws.root, true);
+
+                            let mut state = app_state.borrow_mut();
+                            state.config.workspace_ids.push(ws.config.borrow().id.clone());
+                            state.workspaces.push(ws);
+                        }
+                    }
+                },
+            );
+        }
+    ));
+
+    // Track active tab changes
+    notebook.connect_switch_page(glib::clone!(
+        #[strong] app_state,
+        move |_nb, _page, page_num| {
+            app_state.borrow_mut().config.active_tab = page_num as usize;
+        }
+    ));
+
+    // Enable tab reordering
+    for i in 0..notebook.n_pages() {
+        if let Some(child) = notebook.nth_page(Some(i)) {
+            notebook.set_tab_reorderable(&child, true);
+        }
+    }
+
+    // Restore active tab
+    if app_config.active_tab < notebook.n_pages() as usize {
+        notebook.set_current_page(Some(app_config.active_tab as u32));
+    }
 
     // Window
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("FlyCrys")
         .icon_name(APP_ID)
-        .default_width(1400)
-        .default_height(800)
-        .child(&outer_paned)
+        .default_width(app_config.window_width)
+        .default_height(app_config.window_height)
+        .child(&notebook)
         .build();
 
-    // Action: Copy Path
-    let action_copy = gio::SimpleAction::new("copy-path", None);
-    action_copy.connect_activate(glib::clone!(
-        #[weak] window,
-        #[strong] ctx_path,
-        move |_, _| {
-            let path = ctx_path.borrow().clone();
-            if !path.is_empty() {
-                window.clipboard().set_text(&path);
+    // Save window size on close
+    window.connect_close_request(glib::clone!(
+        #[strong] app_state,
+        move |win| {
+            let (w, h) = win.default_size();
+            let mut state = app_state.borrow_mut();
+            state.config.window_width = w;
+            state.config.window_height = h;
+
+            // Sync workspace order from notebook tabs
+            // (in case user reordered tabs — we just save current order)
+            let ids: Vec<String> = state
+                .workspaces
+                .iter()
+                .map(|ws| ws.config.borrow().id.clone())
+                .collect();
+            state.config.workspace_ids = ids;
+
+            // Save everything
+            session::save_app_config(&state.config);
+            for ws in &state.workspaces {
+                session::save_workspace_config(&ws.config.borrow());
+                session::save_chat_history(
+                    &ws.config.borrow().id,
+                    &ws.chat_history.borrow(),
+                );
             }
+
+            glib::Propagation::Proceed
         }
     ));
-    window.add_action(&action_copy);
 
-    // Action: Open Terminal Here
-    let action_terminal = gio::SimpleAction::new("open-terminal-here", None);
-    action_terminal.connect_activate(glib::clone!(
-        #[weak] terminal_container,
-        #[weak] vte_terminal,
-        #[strong] ctx_path,
-        #[strong] ctx_is_dir,
-        move |_, _| {
-            let path = ctx_path.borrow().clone();
-            let is_dir = *ctx_is_dir.borrow();
-            if path.is_empty() {
-                return;
+    // Autosave every 5 seconds
+    {
+        let app_state = Rc::clone(&app_state);
+        glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
+            let state = app_state.borrow();
+            session::save_app_config(&state.config);
+            for ws in &state.workspaces {
+                session::save_workspace_config(&ws.config.borrow());
+                session::save_chat_history(
+                    &ws.config.borrow().id,
+                    &ws.chat_history.borrow(),
+                );
             }
-            let dir = if is_dir {
-                path
-            } else {
-                std::path::Path::new(&path)
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/".to_string())
-            };
-            terminal_container.set_visible(true);
-            terminal::spawn_shell(&vte_terminal, &dir);
-        }
-    ));
-    window.add_action(&action_terminal);
-
-    // Action: Add to Chat
-    let action_add_chat = gio::SimpleAction::new("add-to-chat", None);
-    action_add_chat.connect_activate(glib::clone!(
-        #[weak] agent_input,
-        #[strong] ctx_path,
-        move |_, _| {
-            let path = ctx_path.borrow().clone();
-            if !path.is_empty() {
-                append_path_to_input(&agent_input, &path);
-            }
-        }
-    ));
-    window.add_action(&action_add_chat);
-
-    // --- Drag from file tree → drop on agent input ---
-
-    // Drag source on the ListView
-    let drag_source = gtk::DragSource::new();
-    drag_source.set_actions(gtk::gdk::DragAction::COPY);
-    drag_source.connect_prepare(glib::clone!(
-        #[weak] list_view,
-        #[upgrade_or] None,
-        move |_source, x, y| {
-            // Find the FileEntry at (x, y) via TreeExpander walk
-            let widget = list_view.pick(x, y, gtk::PickFlags::DEFAULT)?;
-            let mut current = Some(widget);
-            while let Some(w) = current {
-                if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                    if let Some(item) = expander.item() {
-                        if let Some(entry) = item.downcast_ref::<FileEntry>() {
-                            let path = entry.path();
-                            return Some(gtk::gdk::ContentProvider::for_value(
-                                &path.to_value(),
-                            ));
-                        }
-                    }
-                    return None;
-                }
-                current = w.parent();
-            }
-            None
-        }
-    ));
-    list_view.add_controller(drag_source);
-
-    // Drop target on the agent input TextView
-    let drop_target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
-    drop_target.connect_drop(glib::clone!(
-        #[weak] agent_input,
-        #[upgrade_or] false,
-        move |_target, value, _x, _y| {
-            if let Ok(path) = value.get::<String>() {
-                append_path_to_input(&agent_input, &path);
-                return true;
-            }
-            false
-        }
-    ));
-    agent_input.add_controller(drop_target);
-
-    // Also accept drops anywhere on the agent panel
-    let panel_drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
-    panel_drop.connect_drop(glib::clone!(
-        #[weak] agent_input,
-        #[upgrade_or] false,
-        move |_target, value, _x, _y| {
-            if let Ok(path) = value.get::<String>() {
-                append_path_to_input(&agent_input, &path);
-                return true;
-            }
-            false
-        }
-    ));
-    agent_panel.add_controller(panel_drop);
+            glib::ControlFlow::Continue
+        });
+    }
 
     window.present();
 }
 
-fn append_path_to_input(input: &gtk::TextView, path: &str) {
-    let buffer = input.buffer();
-    let mut end = buffer.end_iter();
-    let current = buffer.text(&buffer.start_iter(), &end, false);
-    let prefix = if current.is_empty() || current.ends_with(' ') || current.ends_with('\n') {
-        ""
-    } else {
-        " "
-    };
-    buffer.insert(&mut end, &format!("{prefix}{path}"));
-}
+/// Create a tab label widget with spinner, text, and a close button
+fn create_tab_label(
+    text: &str,
+    tab_spinner: &gtk::Spinner,
+    notebook: &gtk::Notebook,
+    page_widget: &gtk::Box,
+    app_state: &Rc<RefCell<AppState>>,
+) -> gtk::Box {
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 4);
 
-/// Navigate the file tree to select a file, expanding parent directories as needed
-fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
-    for _pass in 0..30 {
-        let n = selection.n_items();
-        let mut expanded_any = false;
-        for i in 0..n {
-            let Some(item) = selection.item(i) else {
-                continue;
-            };
-            let Some(row) = item.downcast_ref::<gtk::TreeListRow>() else {
-                continue;
-            };
-            let Some(entry) = row.item().and_downcast::<FileEntry>() else {
-                continue;
-            };
+    hbox.append(tab_spinner);
 
-            if entry.path() == target_path {
-                selection.set_selected(i);
-                return;
-            }
+    let label = gtk::Label::new(Some(text));
+    label.set_hexpand(true);
+    label.set_xalign(0.0);
 
-            let entry_path = entry.path();
-            if entry.is_dir()
-                && !row.is_expanded()
-                && target_path.starts_with(&entry_path)
-                && target_path.as_bytes().get(entry_path.len()) == Some(&b'/')
-            {
-                row.set_expanded(true);
-                expanded_any = true;
-                break; // Restart scan since indices changed
-            }
+    let close_btn = gtk::Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    close_btn.set_tooltip_text(Some("Close workspace"));
+    close_btn.add_css_class("flat");
+
+    hbox.append(&label);
+    hbox.append(&close_btn);
+
+    close_btn.connect_clicked(glib::clone!(
+        #[weak] notebook,
+        #[weak] page_widget,
+        #[strong] app_state,
+        move |btn| {
+            // Confirmation dialog
+            let dialog = gtk::AlertDialog::builder()
+                .message("Close this workspace?")
+                .detail("The workspace tab will be closed and removed from the session.")
+                .buttons(["Cancel", "Close"])
+                .default_button(0)
+                .cancel_button(0)
+                .build();
+
+            let window = btn.root().and_downcast::<gtk::Window>();
+            let notebook = notebook.clone();
+            let page_widget = page_widget.clone();
+            let app_state = Rc::clone(&app_state);
+
+            dialog.choose(
+                window.as_ref(),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if result == Ok(1) {
+                        // User confirmed close
+                        if let Some(page_num) = notebook.page_num(&page_widget) {
+                            // Find and remove workspace from state
+                            let mut state = app_state.borrow_mut();
+                            if let Some(idx) = state
+                                .workspaces
+                                .iter()
+                                .position(|ws| ws.root == page_widget)
+                            {
+                                let ws = state.workspaces.remove(idx);
+                                let id = ws.config.borrow().id.clone();
+                                state.config.workspace_ids.retain(|i| i != &id);
+                                session::delete_workspace_config(&id);
+                                session::delete_chat_history(&id);
+                            }
+                            drop(state);
+                            notebook.remove_page(Some(page_num as u32));
+                        }
+                    }
+                },
+            );
         }
-        if !expanded_any {
-            break;
-        }
-    }
+    ));
+
+    hbox
 }

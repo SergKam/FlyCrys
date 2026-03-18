@@ -51,6 +51,7 @@ pub struct StreamEventData {
     pub content_block: Option<ContentBlock>,
     pub delta: Option<Delta>,
     pub message: Option<serde_json::Value>,
+    pub usage: Option<StreamUsage>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -75,6 +76,19 @@ pub struct Delta {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[allow(dead_code)]
+pub struct StreamUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct AssistantMessage {
     pub content: Option<Vec<ContentBlock>>,
 }
@@ -95,6 +109,15 @@ pub struct ToolUseResult {
 pub struct ImageAttachment {
     pub bytes: Vec<u8>,
     pub media_type: String,
+}
+
+/// Configuration for spawning a Claude CLI process
+#[derive(Default)]
+pub struct AgentSpawnConfig {
+    pub system_prompt: Option<String>,
+    pub allowed_tools: Vec<String>,
+    pub model: Option<String>,
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,8 +205,10 @@ impl AgentProcess {
     pub fn spawn(
         &mut self,
         sender: mpsc::Sender<AgentEvent>,
+        working_dir: &std::path::Path,
+        config: &AgentSpawnConfig,
     ) -> bool {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+        let cwd = working_dir.to_path_buf();
 
         // Use a PTY for stdout so Node.js treats it as a TTY and flushes immediately
         let pty = create_pty_pair();
@@ -204,6 +229,22 @@ impl AgentProcess {
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stderr(Stdio::null());
+
+        // Agent profile options
+        if let Some(ref prompt) = config.system_prompt {
+            if !prompt.is_empty() {
+                cmd.arg("--system-prompt").arg(prompt);
+            }
+        }
+        for tool in &config.allowed_tools {
+            cmd.arg("--allowedTools").arg(tool);
+        }
+        if let Some(ref model) = config.model {
+            cmd.arg("--model").arg(model);
+        }
+        if let Some(ref session_id) = config.resume_session_id {
+            cmd.arg("--resume").arg(session_id);
+        }
 
         if let Some(slave) = pty_slave {
             cmd.stdout(Stdio::from(slave));
