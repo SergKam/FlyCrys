@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=FlyCrys
+Comment=GTK4 file viewer with agent panel
+Exec=flycrys
+Icon=com.flycrys.app
+Type=Application
+Categories=Development;Utility;

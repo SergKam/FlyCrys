@@ -1,9 +1,12 @@
+use base64::{engine::general_purpose, Engine as _};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum AgentEvent {
     #[serde(rename = "system")]
     System {
@@ -39,6 +42,7 @@ pub enum AgentEvent {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct StreamEventData {
     #[serde(rename = "type")]
     pub event_type: String,
@@ -50,6 +54,7 @@ pub struct StreamEventData {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct ContentBlock {
     #[serde(rename = "type")]
     pub block_type: String,
@@ -59,6 +64,7 @@ pub struct ContentBlock {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct Delta {
     #[serde(rename = "type")]
     pub delta_type: Option<String>,
@@ -68,11 +74,13 @@ pub struct Delta {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct AssistantMessage {
     pub content: Option<Vec<ContentBlock>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct ToolUseResult {
     #[serde(default)]
     pub stdout: String,
@@ -84,11 +92,74 @@ pub struct ToolUseResult {
     pub content: Option<String>,
 }
 
+pub struct ImageAttachment {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessState {
     Idle,
     Running,
     Paused,
+}
+
+/// Create a PTY pair (master, slave) with raw mode on the slave.
+/// A PTY forces Node.js to treat stdout as a TTY, which uses immediate
+/// (unbuffered) writes instead of caching output in internal buffers.
+fn create_pty_pair() -> Option<(OwnedFd, OwnedFd)> {
+    unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        if master < 0 {
+            return None;
+        }
+        if libc::grantpt(master) != 0 || libc::unlockpt(master) != 0 {
+            libc::close(master);
+            return None;
+        }
+        let slave_name = libc::ptsname(master);
+        if slave_name.is_null() {
+            libc::close(master);
+            return None;
+        }
+        let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
+        if slave < 0 {
+            libc::close(master);
+            return None;
+        }
+        // Raw mode: disable terminal processing (CR/LF, echo, etc.)
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        if libc::tcgetattr(slave, termios.as_mut_ptr()) == 0 {
+            let mut t = termios.assume_init();
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(slave, libc::TCSANOW, &t);
+        }
+        // Prevent master fd from leaking into child process
+        libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+        Some((OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)))
+    }
+}
+
+fn spawn_reader<R: std::io::Read + Send + 'static>(
+    reader: R,
+    sender: mpsc::Sender<AgentEvent>,
+) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.is_empty() => {
+                    if let Ok(event) = serde_json::from_str::<AgentEvent>(&line) {
+                        if sender.send(event).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+                _ => {}
+            }
+        }
+    });
 }
 
 pub struct AgentProcess {
@@ -114,8 +185,15 @@ impl AgentProcess {
     ) -> bool {
         let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
 
-        let result = Command::new("claude")
-            .arg("-p")
+        // Use a PTY for stdout so Node.js treats it as a TTY and flushes immediately
+        let pty = create_pty_pair();
+        let (pty_slave, pty_master) = match pty {
+            Some((master, slave)) => (Some(slave), Some(master)),
+            None => (None, None),
+        };
+
+        let mut cmd = Command::new("claude");
+        cmd.arg("-p")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
@@ -125,48 +203,62 @@ impl AgentProcess {
             .arg("--dangerously-skip-permissions")
             .current_dir(&cwd)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
 
-        match result {
+        if let Some(slave) = pty_slave {
+            cmd.stdout(Stdio::from(slave));
+        } else {
+            cmd.stdout(Stdio::piped());
+        }
+
+        match cmd.spawn() {
             Ok(mut child) => {
                 self.pid = Some(child.id());
                 self.stdin = child.stdin.take();
-                let stdout = child.stdout.take().unwrap();
                 self.child = Some(child);
                 self.state = ProcessState::Running;
 
-                // Reader thread → glib channel
-                std::thread::spawn(move || {
-                    let reader = BufReader::new(stdout);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(line) if !line.is_empty() => {
-                                if let Ok(event) = serde_json::from_str::<AgentEvent>(&line) {
-                                    if sender.send(event).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(_) => break,
-                            _ => {}
-                        }
-                    }
-                });
+                if let Some(master) = pty_master {
+                    spawn_reader(std::fs::File::from(master), sender);
+                } else {
+                    let stdout = self.child.as_mut().unwrap().stdout.take().unwrap();
+                    spawn_reader(stdout, sender);
+                }
                 true
             }
             Err(_) => false,
         }
     }
 
-    pub fn send_message(&mut self, text: &str) {
+    pub fn send_message(&mut self, text: &str, images: &[ImageAttachment]) {
         if let Some(ref mut stdin) = self.stdin {
+            let content = if images.is_empty() {
+                serde_json::json!(text)
+            } else {
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                for img in images {
+                    blocks.push(serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": &img.media_type,
+                            "data": general_purpose::STANDARD.encode(&img.bytes)
+                        }
+                    }));
+                }
+                if !text.is_empty() {
+                    blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": text
+                    }));
+                }
+                serde_json::json!(blocks)
+            };
             let msg = serde_json::json!({
                 "type": "user",
                 "message": {
                     "role": "user",
-                    "content": text
+                    "content": content
                 }
             });
             let _ = writeln!(stdin, "{}", msg);

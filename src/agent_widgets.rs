@@ -1,5 +1,6 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
+use std::rc::Rc;
 
 /// User message bubble (right-aligned)
 pub fn create_user_message(text: &str) -> gtk::Box {
@@ -51,28 +52,74 @@ pub fn create_assistant_text() -> (gtk::Box, gtk::Label) {
 /// Update assistant label with markdown-rendered content
 pub fn update_assistant_text(label: &gtk::Label, raw_md: &str) {
     let markup = crate::markdown::md_to_pango(raw_md);
-    label.set_markup(&markup);
+    // Validate markup first; if invalid, fall back to plain text so content is never lost
+    if gtk::pango::parse_markup(&markup, '\0').is_ok() {
+        label.set_markup(&markup);
+    } else {
+        label.set_text(raw_md);
+    }
 }
 
-/// Tool call expandable panel
-pub fn create_tool_call(tool_name: &str, tool_input_hint: &str) -> (gtk::Expander, gtk::Box) {
-    let title = if tool_input_hint.is_empty() {
-        format!("● {tool_name}(…)")
+/// Tool call expandable panel with optional clickable file path
+pub fn create_tool_call(
+    tool_name: &str,
+    tool_input_hint: &str,
+    file_path: Option<&str>,
+    on_open_file: Rc<dyn Fn(&str)>,
+) -> (gtk::Expander, gtk::Box) {
+    let expander = gtk::Expander::new(None);
+    expander.set_margin_start(8);
+    expander.set_margin_end(8);
+    expander.set_margin_top(4);
+    expander.set_margin_bottom(4);
+    expander.add_css_class("tool-call");
+
+    // Build header label widget
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+
+    if let Some(path) = file_path {
+        let name_label = gtk::Label::new(Some(&format!("● {tool_name}(")));
+        header.append(&name_label);
+
+        let short_path = if path.len() > 60 {
+            let truncated: String = path.chars().take(57).collect();
+            format!("{truncated}…")
+        } else {
+            path.to_string()
+        };
+
+        let link_label = gtk::Label::new(None);
+        link_label.set_use_markup(true);
+        link_label.set_markup(&format!(
+            "<span foreground=\"#4a90d9\" underline=\"single\">{}</span>",
+            escape_markup(&short_path)
+        ));
+
+        let path_btn = gtk::Button::new();
+        path_btn.set_child(Some(&link_label));
+        path_btn.add_css_class("flat");
+        path_btn.add_css_class("file-link");
+        path_btn.set_tooltip_text(Some(path));
+
+        let path_owned = path.to_string();
+        path_btn.connect_clicked(move |_| {
+            on_open_file(&path_owned);
+        });
+        header.append(&path_btn);
+
+        let close_label = gtk::Label::new(Some(")"));
+        header.append(&close_label);
     } else {
         let short = if tool_input_hint.len() > 60 {
             format!("{}…", &tool_input_hint[..57])
         } else {
             tool_input_hint.to_string()
         };
-        format!("● {tool_name}({short})")
-    };
+        let label = gtk::Label::new(Some(&format!("● {tool_name}({short})")));
+        header.append(&label);
+    }
 
-    let expander = gtk::Expander::new(Some(&title));
-    expander.set_margin_start(8);
-    expander.set_margin_end(8);
-    expander.set_margin_top(2);
-    expander.set_margin_bottom(2);
-    expander.add_css_class("tool-call");
+    expander.set_label_widget(Some(&header));
 
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content_box.set_margin_start(16);
@@ -88,16 +135,44 @@ pub fn create_tool_call(tool_name: &str, tool_input_hint: &str) -> (gtk::Expande
     (expander, content_box)
 }
 
+fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Fill tool result into the tool call's content box
-pub fn fill_tool_result(content_box: &gtk::Box, output: &str, is_error: bool) {
+pub fn fill_tool_result(
+    content_box: &gtk::Box,
+    output: &str,
+    is_error: bool,
+    tool_name: &str,
+    tool_input: &str,
+) {
     // Remove the spinner
     while let Some(child) = content_box.first_child() {
         content_box.remove(&child);
     }
 
+    // For Edit tool, try to show a highlighted diff
+    if tool_name == "Edit" {
+        if let Some(diff_markup) = create_edit_diff_markup(tool_input) {
+            let label = gtk::Label::new(None);
+            label.set_use_markup(true);
+            label.set_markup(&diff_markup);
+            label.set_wrap(true);
+            label.set_xalign(0.0);
+            label.set_selectable(true);
+            label.add_css_class("monospace");
+            content_box.append(&label);
+            return;
+        }
+    }
+
     let text = if output.len() > 2000 {
         let lines: Vec<&str> = output.lines().collect();
-        let shown = if lines.len() > 10 {
+        if lines.len() > 10 {
             let head: Vec<&str> = lines[..5].to_vec();
             let tail: Vec<&str> = lines[lines.len() - 5..].to_vec();
             format!(
@@ -108,8 +183,7 @@ pub fn fill_tool_result(content_box: &gtk::Box, output: &str, is_error: bool) {
             )
         } else {
             output[..2000].to_string() + "…"
-        };
-        shown
+        }
     } else {
         output.to_string()
     };
@@ -124,6 +198,67 @@ pub fn fill_tool_result(content_box: &gtk::Box, output: &str, is_error: bool) {
     }
 
     content_box.append(&label);
+}
+
+/// Try to build a Pango diff markup from Edit tool input JSON
+fn create_edit_diff_markup(tool_input: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(tool_input).ok()?;
+    let old_string = val.get("old_string")?.as_str()?;
+    let new_string = val.get("new_string")?.as_str()?;
+    let file_path = val
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    Some(crate::highlight::diff_to_pango(
+        old_string, new_string, file_path,
+    ))
+}
+
+/// User message bubble with image thumbnails (right-aligned)
+pub fn create_user_message_with_images(text: &str, textures: &[gtk::gdk::Texture]) -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    container.set_halign(gtk::Align::End);
+    container.set_margin_start(48);
+    container.set_margin_end(8);
+    container.set_margin_top(4);
+    container.set_margin_bottom(4);
+
+    let frame = gtk::Frame::new(None);
+    frame.add_css_class("user-message");
+
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    inner.set_margin_start(10);
+    inner.set_margin_end(10);
+    inner.set_margin_top(6);
+    inner.set_margin_bottom(6);
+
+    let img_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    img_row.set_halign(gtk::Align::End);
+    for texture in textures {
+        let picture = gtk::Picture::for_paintable(texture);
+        picture.set_content_fit(gtk::ContentFit::Contain);
+        let thumb = gtk::Frame::new(None);
+        thumb.set_size_request(160, 120);
+        thumb.set_overflow(gtk::Overflow::Hidden);
+        thumb.set_child(Some(&picture));
+        thumb.add_css_class("image-thumb");
+        img_row.append(&thumb);
+    }
+    inner.append(&img_row);
+
+    if !text.is_empty() {
+        let label = gtk::Label::new(Some(text));
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.set_xalign(0.0);
+        label.set_selectable(true);
+        inner.append(&label);
+    }
+
+    frame.set_child(Some(&inner));
+    container.append(&frame);
+    container
 }
 
 /// System/status message (subtle, centered)

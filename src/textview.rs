@@ -39,7 +39,12 @@ pub fn create_text_view() -> (gtk::Box, gtk::TextView, gtk::Label) {
     (vbox, text_view, path_label)
 }
 
-pub fn load_file(text_view: &gtk::TextView, path_label: &gtk::Label, file_path: &str) {
+pub fn load_file(
+    text_view: &gtk::TextView,
+    path_label: &gtk::Label,
+    file_path: &str,
+    theme: &str,
+) {
     let path = Path::new(file_path);
     path_label.set_text(file_path);
 
@@ -64,7 +69,7 @@ pub fn load_file(text_view: &gtk::TextView, path_label: &gtk::Label, file_path: 
     match std::fs::read_to_string(path) {
         Ok(content) => {
             if highlight::is_highlightable(file_path) {
-                highlight::highlight_buffer(&buffer, &content, file_path);
+                highlight::highlight_buffer_with_theme(&buffer, &content, file_path, theme);
             } else {
                 buffer.set_text(&content);
             }
