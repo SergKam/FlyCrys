@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build .deb package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libvte-2.91-gtk4-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAG_VERSION=${GITHUB_REF_NAME#v}
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "Version: $CARGO_VERSION ✓"
+
+      - name: Build .deb package
+        run: cargo deb
+
+      - name: Show package info
+        run: |
+          DEB_FILE=$(ls target/debian/*.deb)
+          echo "Package: $DEB_FILE"
+          echo "---"
+          dpkg-deb --info "$DEB_FILE"
+          echo "---"
+          dpkg-deb --contents "$DEB_FILE"
+
+      - name: Build release binary tarball
+        run: |
+          ARCHIVE="flycrys-${GITHUB_REF_NAME}-x86_64-linux.tar.gz"
+          tar czf "$ARCHIVE" \
+            -C target/release flycrys \
+            -C "$GITHUB_WORKSPACE" \
+            com.flycrys.app.desktop \
+            icons/ \
+            LICENSE \
+            README.md
+          echo "TARBALL=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/debian/*.deb
+            ${{ env.TARBALL }}
+          generate_release_notes: true
+          draft: false

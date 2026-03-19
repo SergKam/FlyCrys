@@ -40,6 +40,8 @@ pub enum AgentEvent {
         #[serde(rename = "modelUsage")]
         model_usage: Option<serde_json::Value>,
     },
+    #[serde(rename = "process_error")]
+    ProcessError { message: String },
     #[serde(other)]
     Unknown,
 }
@@ -175,10 +177,37 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
         for line in reader.lines() {
             match line {
                 Ok(line) if !line.is_empty() => {
-                    if let Ok(event) = serde_json::from_str::<AgentEvent>(&line) {
-                        if sender.send(event).is_err() {
-                            break;
+                    match serde_json::from_str::<AgentEvent>(&line) {
+                        Ok(event) => {
+                            if sender.send(event).is_err() {
+                                break;
+                            }
                         }
+                        Err(e) => {
+                            let preview: String = line.chars().take(200).collect();
+                            eprintln!("flycrys: failed to parse agent JSON: {e} — {preview}");
+                        }
+                    }
+                }
+                Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+}
+
+fn spawn_stderr_reader<R: std::io::Read + Send + 'static>(
+    reader: R,
+    sender: mpsc::Sender<AgentEvent>,
+) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.is_empty() => {
+                    let event = AgentEvent::ProcessError { message: line };
+                    if sender.send(event).is_err() {
+                        break;
                     }
                 }
                 Err(_) => break,
