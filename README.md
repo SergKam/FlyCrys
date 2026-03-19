@@ -6,18 +6,7 @@
 
 FlyCrys is not an IDE. It doesn't edit files — agents do. You talk to agents, they write the code. FlyCrys gives you a minimal, focused workspace to orchestrate that workflow without getting in the way.
 
-```
-┌─────────────────┬──────────┬───────────────────┐
-│                 │          │                   │
-│   Agent         │  File    │   Text Viewer     │
-│   (chat + tools)│  Tree    │   (syntax-colored)│
-│                 │          │───────────────────│
-│                 │          │   Terminal        │
-│                 │          │   (on demand)     │
-└─────────────────┴──────────┴───────────────────┘
-  ← agent works →   ← browse & inspect →
-```
-
+![FlyCrys screenshot](docs/screenshot.png)
 ## Why FlyCrys
 
 - **Purely agentic.** No editor, no keybindings to learn, no plugin ecosystem. You give instructions, agents execute. That's it.
