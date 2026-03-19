@@ -2,6 +2,11 @@
 name = "flycrys"
 version = "0.1.0"
 edition = "2024"
+description = "Lightning-fast, Linux-native agentic UI on top of Claude Code CLI"
+license = "MIT"
+repository = "https://github.com/SergKam/FlyCrys"
+homepage = "https://github.com/SergKam/FlyCrys"
+readme = "README.md"
 
 [dependencies]
 gtk4 = { version = "0.10", features = ["v4_12"] }
@@ -17,3 +22,25 @@ notify = "6"
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.deb]
+maintainer = "Sergii Kamenskyi <sergukam@gmail.com>"
+copyright = "2026, Sergii Kamenskyi"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+    Lightning-fast, Linux-native agentic UI on top of Claude Code CLI. \
+    Features multi-workspace tabs, file tree browser, syntax-highlighted \
+    viewer, and embedded terminal."""
+depends = "$auto"
+recommends = "nodejs"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/flycrys", "usr/bin/", "755"],
+    ["com.flycrys.app.desktop", "usr/share/applications/", "644"],
+    ["icons/hicolor/48x48/apps/com.flycrys.app.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["icons/hicolor/128x128/apps/com.flycrys.app.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["icons/hicolor/256x256/apps/com.flycrys.app.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["icons/hicolor/512x512/apps/com.flycrys.app.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["README.md", "usr/share/doc/flycrys/README.md", "644"],
+]
