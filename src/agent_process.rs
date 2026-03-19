@@ -15,12 +15,14 @@ pub enum AgentEvent {
         model: Option<String>,
     },
     #[serde(rename = "stream_event")]
-    StreamEvent { event: StreamEventData },
+    StreamEvent { event: Box<StreamEventData> },
     #[serde(rename = "assistant")]
     Assistant { message: AssistantMessage },
     #[serde(rename = "user")]
     User {
-        tool_use_result: Option<ToolUseResult>,
+        /// Can be a JSON object, a plain string, or absent — kept as Value
+        /// because the Claude CLI sends different shapes depending on the tool.
+        tool_use_result: Option<serde_json::Value>,
         #[serde(default)]
         message: serde_json::Value,
     },
@@ -92,19 +94,6 @@ pub struct StreamUsage {
 #[allow(dead_code)]
 pub struct AssistantMessage {
     pub content: Option<Vec<ContentBlock>>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
-pub struct ToolUseResult {
-    #[serde(default)]
-    pub stdout: String,
-    #[serde(default)]
-    pub stderr: String,
-    #[serde(default)]
-    pub is_error: bool,
-    pub tool_use_id: Option<String>,
-    pub content: Option<String>,
 }
 
 pub struct ImageAttachment {

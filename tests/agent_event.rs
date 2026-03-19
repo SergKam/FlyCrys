@@ -96,27 +96,74 @@ fn agent_event_assistant() {
 }
 
 #[test]
-fn agent_event_user_tool_result() {
+fn agent_event_user_tool_result_object() {
+    // Claude CLI sends tool_use_result as a JSON object for successful tools
     let json = r#"{
         "type": "user",
         "tool_use_result": {
-            "stdout": "file contents here",
-            "stderr": "",
-            "is_error": false,
-            "tool_use_id": "tool_456",
-            "content": "file contents here"
+            "type": "text",
+            "file": { "filePath": "/src/lib.rs", "content": "pub mod foo;" }
         },
-        "message": {}
+        "message": {
+            "role": "user",
+            "content": [{ "tool_use_id": "tool_456", "type": "tool_result", "content": "file contents here" }]
+        }
     }"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
         AgentEvent::User {
-            tool_use_result, ..
+            tool_use_result,
+            message,
+            ..
         } => {
-            let result = tool_use_result.unwrap();
-            assert_eq!(result.stdout, "file contents here");
-            assert!(!result.is_error);
-            assert_eq!(result.tool_use_id.as_deref(), Some("tool_456"));
+            assert!(tool_use_result.is_some());
+            let content = message
+                .get("content")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .first()
+                .unwrap();
+            assert_eq!(
+                content.get("tool_use_id").unwrap().as_str().unwrap(),
+                "tool_456"
+            );
+            assert_eq!(
+                content.get("content").unwrap().as_str().unwrap(),
+                "file contents here"
+            );
+        }
+        _ => panic!("expected User event"),
+    }
+}
+
+#[test]
+fn agent_event_user_tool_result_string() {
+    // Claude CLI sends tool_use_result as a plain string for errors
+    let json = r#"{
+        "type": "user",
+        "tool_use_result": "Error: permission denied",
+        "message": {
+            "role": "user",
+            "content": [{ "tool_use_id": "tool_789", "type": "tool_result", "content": "permission denied", "is_error": true }]
+        }
+    }"#;
+    let event: AgentEvent = serde_json::from_str(json).unwrap();
+    match event {
+        AgentEvent::User {
+            tool_use_result,
+            message,
+            ..
+        } => {
+            assert!(tool_use_result.is_some());
+            let content = message
+                .get("content")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .first()
+                .unwrap();
+            assert_eq!(content.get("is_error").unwrap().as_bool().unwrap(), true);
         }
         _ => panic!("expected User event"),
     }
@@ -227,8 +274,8 @@ fn e2e_agent_multi_tool_conversation() {
         r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Read"}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/src/main.rs\"}"}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#,
-        // Tool result
-        r#"{"type":"user","tool_use_result":{"stdout":"fn main() {}","stderr":"","is_error":false,"tool_use_id":"t1","content":"fn main() {}"},"message":{}}"#,
+        // Tool result (real Claude CLI format: output in message.content[0].content)
+        r#"{"type":"user","tool_use_result":{"type":"text"},"message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"fn main() {}"}]}}"#,
         // Second text block
         r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Now editing."}}}"#,
@@ -238,7 +285,7 @@ fn e2e_agent_multi_tool_conversation() {
         r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"old\":\"main\",\"new\":\"app\"}"}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#,
         // Tool result
-        r#"{"type":"user","tool_use_result":{"stdout":"fn app() {}","stderr":"","is_error":false,"tool_use_id":"t2","content":"fn app() {}"},"message":{}}"#,
+        r#"{"type":"user","tool_use_result":{"type":"text"},"message":{"content":[{"tool_use_id":"t2","type":"tool_result","content":"fn app() {}"}]}}"#,
         // Final result
         r#"{"type":"result","result":"Done","total_cost_usd":0.02,"num_turns":3,"is_error":false}"#,
     ];
@@ -270,11 +317,15 @@ fn e2e_agent_multi_tool_conversation() {
                     }
                 }
             }
-            AgentEvent::User {
-                tool_use_result, ..
-            } => {
-                if let Some(r) = tool_use_result {
-                    tool_results.push(r.stdout);
+            AgentEvent::User { message, .. } => {
+                if let Some(content) = message
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|item| item.get("content"))
+                    .and_then(|v| v.as_str())
+                {
+                    tool_results.push(content.to_string());
                 }
             }
             AgentEvent::Result {
@@ -402,7 +453,7 @@ fn e2e_agent_tool_use_flow() {
         r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"/src/main.rs\"}"}}}"#,
         r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
-        r#"{"type":"user","tool_use_result":{"stdout":"fn main() {}","stderr":"","is_error":false,"tool_use_id":"t1","content":"fn main() {}"},"message":{}}"#,
+        r#"{"type":"user","tool_use_result":{"type":"text"},"message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"fn main() {}"}]}}"#,
     ];
 
     let mut tool_name = String::new();
@@ -424,11 +475,15 @@ fn e2e_agent_tool_use_flow() {
                     }
                 }
             }
-            AgentEvent::User {
-                tool_use_result, ..
-            } => {
-                if let Some(r) = tool_use_result {
-                    tool_result = r.stdout;
+            AgentEvent::User { message, .. } => {
+                if let Some(content) = message
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|item| item.get("content"))
+                    .and_then(|v| v.as_str())
+                {
+                    tool_result = content.to_string();
                 }
             }
             _ => {}

@@ -92,10 +92,93 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-/// Shared app-level state
+// ── Lazy tab slot ───────────────────────────────────────────────────────
+
+/// A notebook tab that may or may not have its workspace materialised yet.
+/// Only the active tab is built at startup; others are built on first switch.
+struct TabSlot {
+    /// The gtk::Box used as the notebook page widget (always present).
+    wrapper: gtk::Box,
+    /// Spinner widget shared between the tab label and the workspace.
+    spinner: gtk::Spinner,
+    /// Set when the tab hasn't been visited yet; consumed by `materialize()`.
+    pending_config: Option<WorkspaceConfig>,
+    /// Set once the workspace has been constructed.
+    workspace: Option<Workspace>,
+}
+
+impl TabSlot {
+    /// Create a tab that is already built (for the active tab, or new tabs).
+    fn new_ready(config: WorkspaceConfig, is_dark: Rc<Cell<bool>>) -> Self {
+        let spinner = gtk::Spinner::new();
+        spinner.set_size_request(12, 12);
+        let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        wrapper.set_vexpand(true);
+        wrapper.set_hexpand(true);
+        let ws = Workspace::new(config, is_dark, spinner.clone());
+        wrapper.append(&ws.root);
+        TabSlot {
+            wrapper,
+            spinner,
+            pending_config: None,
+            workspace: Some(ws),
+        }
+    }
+
+    /// Create a lightweight placeholder tab (built on first switch).
+    fn new_pending(config: WorkspaceConfig) -> Self {
+        let spinner = gtk::Spinner::new();
+        spinner.set_size_request(12, 12);
+        let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        wrapper.set_vexpand(true);
+        wrapper.set_hexpand(true);
+        TabSlot {
+            wrapper,
+            spinner,
+            pending_config: Some(config),
+            workspace: None,
+        }
+    }
+
+    /// Build the workspace if it hasn't been built yet.
+    fn materialize(&mut self, is_dark: Rc<Cell<bool>>) {
+        if self.workspace.is_some() {
+            return;
+        }
+        if let Some(config) = self.pending_config.take() {
+            let ws = Workspace::new(config, is_dark, self.spinner.clone());
+            self.wrapper.append(&ws.root);
+            self.workspace = Some(ws);
+        }
+    }
+
+    fn workspace_id(&self) -> String {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().id.clone()
+        } else if let Some(ref config) = self.pending_config {
+            config.id.clone()
+        } else {
+            unreachable!("TabSlot has neither workspace nor pending_config")
+        }
+    }
+
+    /// Persist this tab's state to disk.
+    fn save(&self) {
+        if let Some(ref ws) = self.workspace {
+            session::save_workspace_config(&ws.config.borrow());
+            session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
+        } else if let Some(ref config) = self.pending_config {
+            // Never visited — config is unchanged on disk, save for consistency
+            session::save_workspace_config(config);
+        }
+    }
+}
+
+// ── App state ───────────────────────────────────────────────────────────
+
 struct AppState {
     config: AppConfig,
-    workspaces: Vec<Workspace>,
+    slots: Vec<TabSlot>,
 }
 
 fn build_ui(app: &gtk::Application) {
@@ -132,7 +215,7 @@ fn build_ui(app: &gtk::Application) {
 
     let app_state = Rc::new(RefCell::new(AppState {
         config: app_config.clone(),
-        workspaces: Vec::new(),
+        slots: Vec::new(),
     }));
 
     // Theme change callback (shared across all workspaces)
@@ -147,12 +230,16 @@ fn build_ui(app: &gtk::Application) {
                 settings.set_gtk_application_prefer_dark_theme(dark);
             }
             app_state.borrow_mut().config.is_dark = dark;
-            // Re-highlight the current file in every workspace
+            // Re-highlight only materialised workspaces
             let rehighlighters: Vec<_> = app_state
                 .borrow()
-                .workspaces
+                .slots
                 .iter()
-                .map(|ws| ws.on_theme_rehighlight.clone())
+                .filter_map(|slot| {
+                    slot.workspace
+                        .as_ref()
+                        .map(|ws| ws.on_theme_rehighlight.clone())
+                })
                 .collect();
             for rh in &rehighlighters {
                 rh(dark);
@@ -249,7 +336,8 @@ fn build_ui(app: &gtk::Application) {
         }
     }
 
-    // Load existing workspaces or show folder chooser
+    // ── Load workspaces (lazy: only active tab is built) ────────────────
+
     let workspace_configs: Vec<WorkspaceConfig> = app_config
         .workspace_ids
         .iter()
@@ -266,25 +354,37 @@ fn build_ui(app: &gtk::Application) {
         app_config.workspace_ids.push(ws_config.id.clone());
         app_config.active_tab = 0;
 
-        let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
+        let label_text = ws_config.tab_label();
+        let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark));
         let label = create_tab_label(
-            &ws.config.borrow().tab_label(),
-            &ws.tab_spinner,
+            &label_text,
+            &slot.spinner,
             &notebook,
-            &ws.root,
+            &slot.wrapper,
             &app_state,
         );
-        notebook.append_page(&ws.root, Some(&label));
-        app_state.borrow_mut().workspaces.push(ws);
+        notebook.append_page(&slot.wrapper, Some(&label));
+        app_state.borrow_mut().slots.push(slot);
     } else {
+        let active_idx = app_config.active_tab.min(workspace_configs.len() - 1);
         let labels = session::dedup_labels(&workspace_configs);
         for (i, ws_config) in workspace_configs.into_iter().enumerate() {
-            let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
-            let label =
-                create_tab_label(&labels[i], &ws.tab_spinner, &notebook, &ws.root, &app_state);
-            notebook.append_page(&ws.root, Some(&label));
-            app_state.borrow_mut().workspaces.push(ws);
+            let slot = if i == active_idx {
+                TabSlot::new_ready(ws_config, Rc::clone(&is_dark))
+            } else {
+                TabSlot::new_pending(ws_config)
+            };
+            let label = create_tab_label(
+                &labels[i],
+                &slot.spinner,
+                &notebook,
+                &slot.wrapper,
+                &app_state,
+            );
+            notebook.append_page(&slot.wrapper, Some(&label));
+            app_state.borrow_mut().slots.push(slot);
         }
+        app_config.active_tab = active_idx;
     }
 
     // "+" button to add new workspace
@@ -317,37 +417,40 @@ fn build_ui(app: &gtk::Application) {
                 {
                     let dir = path.to_string_lossy().to_string();
                     let ws_config = WorkspaceConfig::new(&dir);
+                    let label_text = ws_config.tab_label();
 
-                    let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
-                    let label_text = ws.config.borrow().tab_label();
+                    let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark));
                     let label = create_tab_label(
                         &label_text,
-                        &ws.tab_spinner,
+                        &slot.spinner,
                         &notebook,
-                        &ws.root,
+                        &slot.wrapper,
                         &app_state,
                     );
-                    let page_num = notebook.append_page(&ws.root, Some(&label));
+                    let page_num = notebook.append_page(&slot.wrapper, Some(&label));
                     notebook.set_current_page(Some(page_num as u32));
-                    notebook.set_tab_reorderable(&ws.root, true);
+                    notebook.set_tab_reorderable(&slot.wrapper, true);
 
                     let mut state = app_state.borrow_mut();
-                    state
-                        .config
-                        .workspace_ids
-                        .push(ws.config.borrow().id.clone());
-                    state.workspaces.push(ws);
+                    state.config.workspace_ids.push(slot.workspace_id());
+                    state.slots.push(slot);
                 }
             });
         }
     ));
 
-    // Track active tab changes
+    // Track active tab changes — materialise lazy tabs on first switch
     notebook.connect_switch_page(glib::clone!(
         #[strong]
         app_state,
+        #[strong]
+        is_dark,
         move |_nb, _page, page_num| {
-            app_state.borrow_mut().config.active_tab = page_num as usize;
+            let mut state = app_state.borrow_mut();
+            state.config.active_tab = page_num as usize;
+            if let Some(slot) = state.slots.get_mut(page_num as usize) {
+                slot.materialize(Rc::clone(&is_dark));
+            }
         }
     ));
 
@@ -383,20 +486,14 @@ fn build_ui(app: &gtk::Application) {
             state.config.window_width = w;
             state.config.window_height = h;
 
-            // Sync workspace order from notebook tabs
-            // (in case user reordered tabs — we just save current order)
-            let ids: Vec<String> = state
-                .workspaces
-                .iter()
-                .map(|ws| ws.config.borrow().id.clone())
-                .collect();
+            // Sync workspace order
+            let ids: Vec<String> = state.slots.iter().map(|s| s.workspace_id()).collect();
             state.config.workspace_ids = ids;
 
             // Save everything
             session::save_app_config(&state.config);
-            for ws in &state.workspaces {
-                session::save_workspace_config(&ws.config.borrow());
-                session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
+            for slot in &state.slots {
+                slot.save();
             }
 
             glib::Propagation::Proceed
@@ -409,9 +506,8 @@ fn build_ui(app: &gtk::Application) {
         glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
             let state = app_state.borrow();
             session::save_app_config(&state.config);
-            for ws in &state.workspaces {
-                session::save_workspace_config(&ws.config.borrow());
-                session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
+            for slot in &state.slots {
+                slot.save();
             }
             glib::ControlFlow::Continue
         });
@@ -470,15 +566,12 @@ fn create_tab_label(
                 if result == Ok(1) {
                     // User confirmed close
                     if let Some(page_num) = notebook.page_num(&page_widget) {
-                        // Find and remove workspace from state
+                        // Find and remove slot from state
                         let mut state = app_state.borrow_mut();
-                        if let Some(idx) = state
-                            .workspaces
-                            .iter()
-                            .position(|ws| ws.root == page_widget)
+                        if let Some(idx) = state.slots.iter().position(|s| s.wrapper == page_widget)
                         {
-                            let ws = state.workspaces.remove(idx);
-                            let id = ws.config.borrow().id.clone();
+                            let slot = state.slots.remove(idx);
+                            let id = slot.workspace_id();
                             state.config.workspace_ids.retain(|i| i != &id);
                             session::delete_workspace_config(&id);
                             session::delete_chat_history(&id);

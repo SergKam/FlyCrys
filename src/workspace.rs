@@ -24,7 +24,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(config: WorkspaceConfig, is_dark: Rc<Cell<bool>>) -> Self {
+    pub fn new(
+        config: WorkspaceConfig,
+        is_dark: Rc<Cell<bool>>,
+        tab_spinner: gtk::Spinner,
+    ) -> Self {
         let working_dir = PathBuf::from(&config.working_directory);
         let config = Rc::new(RefCell::new(config));
 
@@ -204,9 +208,7 @@ impl Workspace {
         // Load agent profiles
         let agent_configs = session::list_agent_configs();
 
-        // Tab spinner: shown in notebook tab when agent is working
-        let tab_spinner = gtk::Spinner::new();
-        tab_spinner.set_size_request(12, 12);
+        // Tab spinner: shown in notebook tab when agent is working (created by caller)
 
         // Chat history
         let chat_history = Rc::new(RefCell::new(session::load_chat_history(
