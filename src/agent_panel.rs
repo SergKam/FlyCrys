@@ -501,8 +501,10 @@ pub fn create_agent_panel(
                 };
 
                 let wd = s.working_dir.clone();
-                if !s.process.spawn(sender, &wd, &spawn_config) {
-                    let err = agent_widgets::create_system_message("Failed to start claude CLI");
+                if let Err(err_msg) = s.process.spawn(sender, &wd, &spawn_config) {
+                    let err = agent_widgets::create_system_message(
+                        &format!("Failed to start claude CLI: {err_msg}"),
+                    );
                     message_list.append(&err);
                     return;
                 }
@@ -811,13 +813,17 @@ fn handle_event(
         }
 
         AgentEvent::Result {
+            result,
             total_cost_usd,
             is_error,
             model_usage,
             ..
         } => {
             let msg = if is_error {
-                "✗ Error".to_string()
+                match result {
+                    Some(ref detail) if !detail.is_empty() => format!("✗ Error: {detail}"),
+                    _ => "✗ Error (no details available)".to_string(),
+                }
             } else {
                 format!("✓ Done (${:.2})", total_cost_usd)
             };
@@ -876,6 +882,13 @@ fn handle_event(
             s.current_text.clear();
             s.process.state = ProcessState::Idle;
 
+            scroll_to_bottom(scrolled);
+        }
+
+        AgentEvent::ProcessError { message } => {
+            let label = agent_widgets::create_system_message(&format!("⚠ {message}"));
+            label.add_css_class("error-text");
+            message_list.append(&label);
             scroll_to_bottom(scrolled);
         }
 
