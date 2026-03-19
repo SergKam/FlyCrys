@@ -23,6 +23,7 @@ fn light_css() -> &'static str {
     .error-text { color: @error_color; }
     .monospace { font-family: monospace; font-size: 0.9em; }
     .code-view text { background-color: #ffffff; color: #333333; }
+    .line-gutter text { background-color: #f0f0f0; color: #999999; }
     .image-thumb { border-radius: 4px; }
     .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
     button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
@@ -49,6 +50,7 @@ fn dark_css() -> &'static str {
     .error-text { color: @error_color; }
     .monospace { font-family: monospace; font-size: 0.9em; }
     .code-view text { background-color: #2d2d2d; color: #d3d0c8; }
+    .line-gutter text { background-color: #252525; color: #666666; }
     .image-thumb { border-radius: 4px; }
     .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
     button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
