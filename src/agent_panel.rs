@@ -273,65 +273,71 @@ pub fn create_agent_panel(
         cost_label: cost_label.clone(),
     }));
 
-    // Render restored chat history
+    // Render restored chat history after the UI is shown (deferred to first idle
+    // tick so the window paints immediately instead of blocking on widget creation).
     {
-        let s = state.borrow();
-        let history = s.chat_history.borrow();
-        let on_open = s.on_open_file.clone();
-        let dark = s.is_dark.get();
-        for msg in history.iter() {
-            match msg {
-                ChatMessage::User { text } => {
-                    message_list.append(&agent_widgets::create_user_message(text));
-                }
-                ChatMessage::AssistantText { text } => {
-                    let (container, label) = agent_widgets::create_assistant_text();
-                    let cb = on_open.clone();
-                    label.connect_activate_link(move |_label, uri| {
-                        if let Some(path) = uri.strip_prefix("file://") {
-                            cb(path);
-                            glib::Propagation::Stop
-                        } else {
-                            glib::Propagation::Proceed
-                        }
-                    });
-                    agent_widgets::update_assistant_text(&label, text, dark);
-                    message_list.append(&container);
-                }
-                ChatMessage::ToolCall {
-                    tool_name,
-                    tool_input,
-                    output,
-                    is_error,
-                } => {
-                    let input_text = extract_tool_display(tool_name, tool_input);
-                    let file_path = extract_file_path(tool_input);
-                    let (container, content_box, spinner, expander) =
-                        agent_widgets::create_tool_call(
-                            tool_name,
-                            &input_text,
-                            file_path.as_deref(),
-                            on_open.clone(),
-                        );
-                    agent_widgets::fill_tool_result(
-                        &content_box,
-                        &spinner,
-                        &expander,
-                        output,
-                        *is_error,
+        let state = Rc::clone(&state);
+        let message_list = message_list.clone();
+        let scrolled = scrolled.clone();
+        glib::idle_add_local_once(move || {
+            let s = state.borrow();
+            let history = s.chat_history.borrow();
+            let on_open = s.on_open_file.clone();
+            let dark = s.is_dark.get();
+            for msg in history.iter() {
+                match msg {
+                    ChatMessage::User { text } => {
+                        message_list.append(&agent_widgets::create_user_message(text));
+                    }
+                    ChatMessage::AssistantText { text } => {
+                        let (container, label) = agent_widgets::create_assistant_text();
+                        let cb = on_open.clone();
+                        label.connect_activate_link(move |_label, uri| {
+                            if let Some(path) = uri.strip_prefix("file://") {
+                                cb(path);
+                                glib::Propagation::Stop
+                            } else {
+                                glib::Propagation::Proceed
+                            }
+                        });
+                        agent_widgets::update_assistant_text(&label, text, dark);
+                        message_list.append(&container);
+                    }
+                    ChatMessage::ToolCall {
                         tool_name,
                         tool_input,
-                    );
-                    message_list.append(&container);
-                }
-                ChatMessage::System { text } => {
-                    message_list.append(&agent_widgets::create_system_message(text));
+                        output,
+                        is_error,
+                    } => {
+                        let input_text = extract_tool_display(tool_name, tool_input);
+                        let file_path = extract_file_path(tool_input);
+                        let (container, content_box, spinner, expander) =
+                            agent_widgets::create_tool_call(
+                                tool_name,
+                                &input_text,
+                                file_path.as_deref(),
+                                on_open.clone(),
+                            );
+                        agent_widgets::fill_tool_result(
+                            &content_box,
+                            &spinner,
+                            &expander,
+                            output,
+                            *is_error,
+                            tool_name,
+                            tool_input,
+                        );
+                        message_list.append(&container);
+                    }
+                    ChatMessage::System { text } => {
+                        message_list.append(&agent_widgets::create_system_message(text));
+                    }
                 }
             }
-        }
-        drop(history);
-        drop(s);
-        scroll_to_bottom(&scrolled);
+            drop(history);
+            drop(s);
+            scroll_to_bottom(&scrolled);
+        });
     }
 
     // Dropdown selection change
@@ -781,35 +787,41 @@ fn handle_event(
         }
 
         AgentEvent::User {
-            tool_use_result: Some(ref result),
+            tool_use_result: Some(_),
             ref message,
             ..
         } => {
-            // tool_use_id is in message.content[0].tool_use_id, not in tool_use_result
-            let tool_id = message
+            // The actual tool output lives in message.content[0], not in tool_use_result
+            // (tool_use_result has a different, variable shape from the CLI).
+            let first = message
                 .get("content")
                 .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first())
+                .and_then(|arr| arr.first());
+
+            let tool_id = first
                 .and_then(|item| item.get("tool_use_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
+            let output = first
+                .and_then(|item| item.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let is_error = first
+                .and_then(|item| item.get("is_error"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
             let mut s = state.borrow_mut();
             if let Some(info) = s.pending_tools.remove(&tool_id) {
-                let output = if !result.stdout.is_empty() {
-                    &result.stdout
-                } else if let Some(ref c) = result.content {
-                    c.as_str()
-                } else {
-                    &result.stderr
-                };
                 agent_widgets::fill_tool_result(
                     &info.content_box,
                     &info.spinner,
                     &info.expander,
                     output,
-                    result.is_error,
+                    is_error,
                     &info.tool_name,
                     &info.tool_input,
                 );
@@ -818,7 +830,7 @@ fn handle_event(
                     tool_name: info.tool_name.clone(),
                     tool_input: info.tool_input.clone(),
                     output: output.to_string(),
-                    is_error: result.is_error,
+                    is_error,
                 });
             }
             scroll_to_bottom(scrolled);
@@ -831,16 +843,15 @@ fn handle_event(
             model_usage,
             ..
         } => {
-            let msg = if is_error {
-                match result {
+            // Only show a system message for errors (cost is already in the toolbar)
+            if is_error {
+                let msg = match result {
                     Some(ref detail) if !detail.is_empty() => format!("✗ Error: {detail}"),
                     _ => "✗ Error (no details available)".to_string(),
-                }
-            } else {
-                format!("✓ Done (${:.2})", total_cost_usd)
-            };
-            let info = agent_widgets::create_system_message(&msg);
-            message_list.append(&info);
+                };
+                let info = agent_widgets::create_system_message(&msg);
+                message_list.append(&info);
+            }
 
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
@@ -892,7 +903,15 @@ fn handle_event(
                         is_error: false,
                     });
                 }
-                hist.push(ChatMessage::System { text: msg.clone() });
+                if is_error {
+                    let err_msg = match result {
+                        Some(ref detail) if !detail.is_empty() => {
+                            format!("✗ Error: {detail}")
+                        }
+                        _ => "✗ Error (no details available)".to_string(),
+                    };
+                    hist.push(ChatMessage::System { text: err_msg });
+                }
             }
             s.current_text_label = None;
             s.current_text.clear();
