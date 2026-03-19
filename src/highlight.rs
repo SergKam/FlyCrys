@@ -1,5 +1,5 @@
-use gtk4 as gtk;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
@@ -53,17 +53,20 @@ pub fn highlight_buffer_with_theme(
                 fg.r, fg.g, fg.b, bold as u8, italic as u8,
             );
 
-            if tag_table.lookup(&tag_name).is_none() {
-                if let Some(tag) = buffer.create_tag(
+            if tag_table.lookup(&tag_name).is_none()
+                && let Some(tag) = buffer.create_tag(
                     Some(&tag_name),
-                    &[("foreground", &format!("#{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b))],
-                ) {
-                    if bold {
-                        tag.set_weight(700);
-                    }
-                    if italic {
-                        tag.set_style(gtk::pango::Style::Italic);
-                    }
+                    &[(
+                        "foreground",
+                        &format!("#{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b),
+                    )],
+                )
+            {
+                if bold {
+                    tag.set_weight(700);
+                }
+                if italic {
+                    tag.set_style(gtk::pango::Style::Italic);
                 }
             }
 
@@ -116,7 +119,9 @@ pub fn diff_to_pango(old_string: &str, new_string: &str, file_path: &str) -> Str
                     let fg = style.foreground;
                     out.push_str(&format!(
                         "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
-                        fg.r, fg.g, fg.b,
+                        fg.r,
+                        fg.g,
+                        fg.b,
                         escape_pango(text)
                     ));
                 }
@@ -143,7 +148,9 @@ pub fn diff_to_pango(old_string: &str, new_string: &str, file_path: &str) -> Str
                     let fg = style.foreground;
                     out.push_str(&format!(
                         "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
-                        fg.r, fg.g, fg.b,
+                        fg.r,
+                        fg.g,
+                        fg.b,
                         escape_pango(text)
                     ));
                 }
@@ -172,15 +179,36 @@ pub fn is_highlightable(file_path: &str) -> bool {
     let ext = file_path.rsplit('.').next().unwrap_or("");
     matches!(
         ext,
-        "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx"
+        "js" | "mjs"
+            | "cjs"
+            | "jsx"
+            | "ts"
+            | "tsx"
             | "json"
-            | "css" | "scss" | "less"
-            | "html" | "htm" | "xml" | "svg"
-            | "yaml" | "yml" | "toml"
+            | "css"
+            | "scss"
+            | "less"
+            | "html"
+            | "htm"
+            | "xml"
+            | "svg"
+            | "yaml"
+            | "yml"
+            | "toml"
             | "rs"
-            | "py" | "rb" | "go" | "java" | "c" | "h" | "cpp" | "hpp"
-            | "sh" | "bash" | "zsh"
-            | "md" | "mdx"
+            | "py"
+            | "rb"
+            | "go"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "md"
+            | "mdx"
             | "sql"
             | "dockerfile"
             | "makefile"

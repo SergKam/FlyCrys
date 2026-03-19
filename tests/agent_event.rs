@@ -9,7 +9,11 @@ fn agent_event_system() {
     let json = r#"{"type":"system","subtype":"init","session_id":"sess-123"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::System { subtype, session_id, .. } => {
+        AgentEvent::System {
+            subtype,
+            session_id,
+            ..
+        } => {
             assert_eq!(subtype.as_deref(), Some("init"));
             assert_eq!(session_id.as_deref(), Some("sess-123"));
         }
@@ -106,7 +110,9 @@ fn agent_event_user_tool_result() {
     }"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::User { tool_use_result, .. } => {
+        AgentEvent::User {
+            tool_use_result, ..
+        } => {
             let result = tool_use_result.unwrap();
             assert_eq!(result.stdout, "file contents here");
             assert!(!result.is_error);
@@ -127,7 +133,13 @@ fn agent_event_result() {
     }"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::Result { result, total_cost_usd, num_turns, is_error, .. } => {
+        AgentEvent::Result {
+            result,
+            total_cost_usd,
+            num_turns,
+            is_error,
+            ..
+        } => {
             assert_eq!(result.as_deref(), Some("Task completed successfully"));
             assert!((total_cost_usd - 0.0342).abs() < 0.0001);
             assert_eq!(num_turns, 5);
@@ -165,7 +177,13 @@ fn agent_event_result_missing_optional_fields() {
     let json = r#"{"type":"result"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::Result { result, total_cost_usd, num_turns, is_error, .. } => {
+        AgentEvent::Result {
+            result,
+            total_cost_usd,
+            num_turns,
+            is_error,
+            ..
+        } => {
             assert!(result.is_none());
             assert_eq!(total_cost_usd, 0.0);
             assert_eq!(num_turns, 0);
@@ -180,7 +198,11 @@ fn agent_event_system_minimal() {
     let json = r#"{"type":"system"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::System { subtype, session_id, .. } => {
+        AgentEvent::System {
+            subtype,
+            session_id,
+            ..
+        } => {
             assert!(subtype.is_none());
             assert!(session_id.is_none());
         }
@@ -231,7 +253,9 @@ fn e2e_agent_multi_tool_conversation() {
     for json in events_json {
         let event: AgentEvent = serde_json::from_str(json).unwrap();
         match event {
-            AgentEvent::System { session_id: sid, .. } => {
+            AgentEvent::System {
+                session_id: sid, ..
+            } => {
                 session_id = sid.unwrap_or_default();
             }
             AgentEvent::StreamEvent { event } => {
@@ -246,12 +270,19 @@ fn e2e_agent_multi_tool_conversation() {
                     }
                 }
             }
-            AgentEvent::User { tool_use_result, .. } => {
+            AgentEvent::User {
+                tool_use_result, ..
+            } => {
                 if let Some(r) = tool_use_result {
                     tool_results.push(r.stdout);
                 }
             }
-            AgentEvent::Result { total_cost_usd, num_turns, is_error, .. } => {
+            AgentEvent::Result {
+                total_cost_usd,
+                num_turns,
+                is_error,
+                ..
+            } => {
                 assert!(!is_error);
                 total_cost = total_cost_usd;
                 turns = num_turns;
@@ -280,7 +311,10 @@ fn e2e_agent_error_result() {
 
     for json in events_json {
         let event: AgentEvent = serde_json::from_str(json).unwrap();
-        if let AgentEvent::Result { result, is_error, .. } = event {
+        if let AgentEvent::Result {
+            result, is_error, ..
+        } = event
+        {
             if is_error {
                 got_error = true;
                 error_msg = result.unwrap_or_default();
@@ -339,7 +373,12 @@ fn e2e_agent_event_stream_sequence() {
                 let content = message.content.unwrap();
                 assert_eq!(content[0].text.as_deref(), Some("Hello world"));
             }
-            AgentEvent::Result { total_cost_usd, num_turns, is_error, .. } => {
+            AgentEvent::Result {
+                total_cost_usd,
+                num_turns,
+                is_error,
+                ..
+            } => {
                 got_result = true;
                 assert!(!is_error);
                 assert_eq!(num_turns, 1);
@@ -385,7 +424,9 @@ fn e2e_agent_tool_use_flow() {
                     }
                 }
             }
-            AgentEvent::User { tool_use_result, .. } => {
+            AgentEvent::User {
+                tool_use_result, ..
+            } => {
                 if let Some(r) = tool_use_result {
                     tool_result = r.stdout;
                 }

@@ -13,8 +13,12 @@ fn chat_history_save_load_roundtrip() {
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
     let messages = vec![
-        ChatMessage::User { text: "Hello agent".to_string() },
-        ChatMessage::AssistantText { text: "I'll help you with that.".to_string() },
+        ChatMessage::User {
+            text: "Hello agent".to_string(),
+        },
+        ChatMessage::AssistantText {
+            text: "I'll help you with that.".to_string(),
+        },
         ChatMessage::ToolCall {
             tool_name: "Read".to_string(),
             tool_input: r#"{"file_path":"/src/main.rs"}"#.to_string(),
@@ -23,11 +27,14 @@ fn chat_history_save_load_roundtrip() {
         },
         ChatMessage::ToolCall {
             tool_name: "Edit".to_string(),
-            tool_input: r#"{"file_path":"/src/main.rs","old_string":"old","new_string":"new"}"#.to_string(),
+            tool_input: r#"{"file_path":"/src/main.rs","old_string":"old","new_string":"new"}"#
+                .to_string(),
             output: "Applied edit".to_string(),
             is_error: false,
         },
-        ChatMessage::System { text: "✓ Done ($0.0042)".to_string() },
+        ChatMessage::System {
+            text: "✓ Done ($0.0042)".to_string(),
+        },
     ];
 
     session::save_chat_history("ws-test-1", &messages);
@@ -43,14 +50,21 @@ fn chat_history_save_load_roundtrip() {
         _ => panic!("expected AssistantText"),
     }
     match &loaded[2] {
-        ChatMessage::ToolCall { tool_name, output, .. } => {
+        ChatMessage::ToolCall {
+            tool_name, output, ..
+        } => {
             assert_eq!(tool_name, "Read");
             assert!(output.is_empty(), "Read tool has no output");
         }
         _ => panic!("expected ToolCall"),
     }
     match &loaded[3] {
-        ChatMessage::ToolCall { tool_name, output, is_error, .. } => {
+        ChatMessage::ToolCall {
+            tool_name,
+            output,
+            is_error,
+            ..
+        } => {
             assert_eq!(tool_name, "Edit");
             assert_eq!(output, "Applied edit");
             assert!(!is_error);
@@ -79,9 +93,9 @@ fn chat_history_delete() {
     let tmp = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
-    let messages = vec![
-        ChatMessage::User { text: "test".to_string() },
-    ];
+    let messages = vec![ChatMessage::User {
+        text: "test".to_string(),
+    }];
     session::save_chat_history("ws-del", &messages);
     assert_eq!(session::load_chat_history("ws-del").len(), 1);
 
@@ -95,15 +109,21 @@ fn chat_history_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
-    let v1 = vec![
-        ChatMessage::User { text: "first".to_string() },
-    ];
+    let v1 = vec![ChatMessage::User {
+        text: "first".to_string(),
+    }];
     session::save_chat_history("ws-ow", &v1);
 
     let v2 = vec![
-        ChatMessage::User { text: "first".to_string() },
-        ChatMessage::AssistantText { text: "reply".to_string() },
-        ChatMessage::System { text: "✓ Done".to_string() },
+        ChatMessage::User {
+            text: "first".to_string(),
+        },
+        ChatMessage::AssistantText {
+            text: "reply".to_string(),
+        },
+        ChatMessage::System {
+            text: "✓ Done".to_string(),
+        },
     ];
     session::save_chat_history("ws-ow", &v2);
 
@@ -131,19 +151,19 @@ fn chat_history_tool_call_with_error() {
     let tmp = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
-    let messages = vec![
-        ChatMessage::ToolCall {
-            tool_name: "Bash".to_string(),
-            tool_input: r#"{"command":"exit 1"}"#.to_string(),
-            output: "command failed".to_string(),
-            is_error: true,
-        },
-    ];
+    let messages = vec![ChatMessage::ToolCall {
+        tool_name: "Bash".to_string(),
+        tool_input: r#"{"command":"exit 1"}"#.to_string(),
+        output: "command failed".to_string(),
+        is_error: true,
+    }];
     session::save_chat_history("ws-err", &messages);
     let loaded = session::load_chat_history("ws-err");
 
     match &loaded[0] {
-        ChatMessage::ToolCall { is_error, output, .. } => {
+        ChatMessage::ToolCall {
+            is_error, output, ..
+        } => {
             assert!(is_error);
             assert_eq!(output, "command failed");
         }
@@ -157,9 +177,9 @@ fn chat_history_save_empty_clears_file() {
     let tmp = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
-    let messages = vec![
-        ChatMessage::User { text: "hello".to_string() },
-    ];
+    let messages = vec![ChatMessage::User {
+        text: "hello".to_string(),
+    }];
     session::save_chat_history("ws-clr", &messages);
     assert_eq!(session::load_chat_history("ws-clr").len(), 1);
 
@@ -172,15 +192,21 @@ fn chat_history_save_empty_clears_file() {
 fn chat_history_serde_roundtrip_all_variants() {
     // Verify each ChatMessage variant survives JSON round-trip
     let messages = vec![
-        ChatMessage::User { text: "msg with \"quotes\" & <angle>".to_string() },
-        ChatMessage::AssistantText { text: "**bold** and `code`".to_string() },
+        ChatMessage::User {
+            text: "msg with \"quotes\" & <angle>".to_string(),
+        },
+        ChatMessage::AssistantText {
+            text: "**bold** and `code`".to_string(),
+        },
         ChatMessage::ToolCall {
             tool_name: "Grep".to_string(),
             tool_input: r#"{"pattern":"fn main","path":"/src"}"#.to_string(),
             output: "src/main.rs:1:fn main() {}".to_string(),
             is_error: false,
         },
-        ChatMessage::System { text: "✓ Done ($0.0100)".to_string() },
+        ChatMessage::System {
+            text: "✓ Done ($0.0100)".to_string(),
+        },
     ];
 
     let json = serde_json::to_string(&messages).unwrap();
@@ -201,8 +227,12 @@ fn chat_history_with_unicode() {
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
     let messages = vec![
-        ChatMessage::User { text: "Допоможи з кодом 🔧".to_string() },
-        ChatMessage::AssistantText { text: "我来帮你修改代码 ✨".to_string() },
+        ChatMessage::User {
+            text: "Допоможи з кодом 🔧".to_string(),
+        },
+        ChatMessage::AssistantText {
+            text: "我来帮你修改代码 ✨".to_string(),
+        },
     ];
     session::save_chat_history("ws-uni", &messages);
     let loaded = session::load_chat_history("ws-uni");
@@ -224,14 +254,12 @@ fn chat_history_large_tool_output() {
     unsafe { std::env::set_var("HOME", tmp.path()) };
 
     let large_output = "x".repeat(100_000);
-    let messages = vec![
-        ChatMessage::ToolCall {
-            tool_name: "Bash".to_string(),
-            tool_input: r#"{"command":"cat big_file"}"#.to_string(),
-            output: large_output.clone(),
-            is_error: false,
-        },
-    ];
+    let messages = vec![ChatMessage::ToolCall {
+        tool_name: "Bash".to_string(),
+        tool_input: r#"{"command":"cat big_file"}"#.to_string(),
+        output: large_output.clone(),
+        is_error: false,
+    }];
     session::save_chat_history("ws-big", &messages);
     let loaded = session::load_chat_history("ws-big");
 

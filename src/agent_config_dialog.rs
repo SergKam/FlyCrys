@@ -1,5 +1,5 @@
-use gtk4 as gtk;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -7,11 +7,9 @@ use crate::session::{self, AgentConfig};
 
 /// Open a master/detail dialog for CRUD on agent profiles.
 /// Calls `on_save` with the updated config list when the user saves.
-pub fn show(
-    parent: &gtk::Window,
-    on_save: impl Fn(Vec<AgentConfig>) + 'static,
-) {
-    let configs: Rc<RefCell<Vec<AgentConfig>>> = Rc::new(RefCell::new(session::list_agent_configs()));
+pub fn show(parent: &gtk::Window, on_save: impl Fn(Vec<AgentConfig>) + 'static) {
+    let configs: Rc<RefCell<Vec<AgentConfig>>> =
+        Rc::new(RefCell::new(session::list_agent_configs()));
     let deleted_names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let current_idx: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 
@@ -89,7 +87,12 @@ pub fn show(
     prompt_frame.set_child(Some(&prompt_scroll));
     let prompt_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     prompt_box.set_vexpand(true);
-    prompt_box.append(&gtk::Label::builder().label("System Prompt").xalign(0.0).build());
+    prompt_box.append(
+        &gtk::Label::builder()
+            .label("System Prompt")
+            .xalign(0.0)
+            .build(),
+    );
     prompt_box.append(&prompt_frame);
     detail.append(&prompt_box);
 
@@ -171,7 +174,11 @@ pub fn show(
         }
         let old_name = cfgs[idx].name.clone();
         let new_name = name_entry.text().trim().to_string();
-        let name = if new_name.is_empty() { old_name.clone() } else { new_name };
+        let name = if new_name.is_empty() {
+            old_name.clone()
+        } else {
+            new_name
+        };
 
         if name != old_name {
             deleted_names.borrow_mut().push(old_name);
@@ -179,7 +186,9 @@ pub fn show(
 
         let model_text = model_entry.text().trim().to_string();
         let buf = prompt_view.buffer();
-        let prompt = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+        let prompt = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
         let tools_text = tools_entry.text().to_string();
         let tools: Vec<String> = tools_text
             .split(',')
@@ -191,23 +200,27 @@ pub fn show(
             name,
             system_prompt: prompt,
             allowed_tools: tools,
-            model: if model_text.is_empty() { None } else { Some(model_text) },
+            model: if model_text.is_empty() {
+                None
+            } else {
+                Some(model_text)
+            },
         };
     }
 
     // Select first item
-    if !configs.borrow().is_empty() {
-        if let Some(row) = list_box.row_at_index(0) {
-            list_box.select_row(Some(&row));
-            *current_idx.borrow_mut() = Some(0);
-            load_detail(
-                &configs.borrow()[0],
-                &name_entry,
-                &model_entry,
-                &prompt_view,
-                &tools_entry,
-            );
-        }
+    if !configs.borrow().is_empty()
+        && let Some(row) = list_box.row_at_index(0)
+    {
+        list_box.select_row(Some(&row));
+        *current_idx.borrow_mut() = Some(0);
+        load_detail(
+            &configs.borrow()[0],
+            &name_entry,
+            &model_entry,
+            &prompt_view,
+            &tools_entry,
+        );
     }
 
     // ── Selection change ──
@@ -225,12 +238,26 @@ pub fn show(
 
             // Save current before switching
             if let Some(old_idx) = *current_idx.borrow() {
-                save_detail(&configs, old_idx, &name_entry, &model_entry, &prompt_view, &tools_entry, &deleted_names);
+                save_detail(
+                    &configs,
+                    old_idx,
+                    &name_entry,
+                    &model_entry,
+                    &prompt_view,
+                    &tools_entry,
+                    &deleted_names,
+                );
             }
 
             let cfgs = configs.borrow();
             if new_idx < cfgs.len() {
-                load_detail(&cfgs[new_idx], &name_entry, &model_entry, &prompt_view, &tools_entry);
+                load_detail(
+                    &cfgs[new_idx],
+                    &name_entry,
+                    &model_entry,
+                    &prompt_view,
+                    &tools_entry,
+                );
                 *current_idx.borrow_mut() = Some(new_idx);
             }
         });
@@ -249,7 +276,15 @@ pub fn show(
         add_btn.connect_clicked(move |_| {
             // Save current
             if let Some(old_idx) = *current_idx.borrow() {
-                save_detail(&configs, old_idx, &name_entry, &model_entry, &prompt_view, &tools_entry, &deleted_names);
+                save_detail(
+                    &configs,
+                    old_idx,
+                    &name_entry,
+                    &model_entry,
+                    &prompt_view,
+                    &tools_entry,
+                    &deleted_names,
+                );
             }
 
             // Find unique name
@@ -291,7 +326,9 @@ pub fn show(
         let prompt_view = prompt_view.clone();
         let tools_entry = tools_entry.clone();
         del_btn.connect_clicked(move |_| {
-            let Some(idx) = *current_idx.borrow() else { return };
+            let Some(idx) = *current_idx.borrow() else {
+                return;
+            };
             let cfgs_len = configs.borrow().len();
             if cfgs_len <= 1 {
                 return; // Don't delete the last agent
@@ -311,7 +348,13 @@ pub fn show(
             *current_idx.borrow_mut() = Some(new_idx);
             if let Some(row) = list_box.row_at_index(new_idx as i32) {
                 list_box.select_row(Some(&row));
-                load_detail(&configs.borrow()[new_idx], &name_entry, &model_entry, &prompt_view, &tools_entry);
+                load_detail(
+                    &configs.borrow()[new_idx],
+                    &name_entry,
+                    &model_entry,
+                    &prompt_view,
+                    &tools_entry,
+                );
             }
         });
     }
@@ -334,7 +377,15 @@ pub fn show(
         save_btn.connect_clicked(move |_| {
             // Save current form values
             if let Some(idx) = *current_idx.borrow() {
-                save_detail(&configs, idx, &name_entry, &model_entry, &prompt_view, &tools_entry, &deleted_names);
+                save_detail(
+                    &configs,
+                    idx,
+                    &name_entry,
+                    &model_entry,
+                    &prompt_view,
+                    &tools_entry,
+                    &deleted_names,
+                );
             }
 
             // Delete removed configs from disk

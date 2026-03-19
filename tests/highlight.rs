@@ -7,12 +7,15 @@ use flycrys::highlight;
 #[test]
 fn highlightable_common_extensions() {
     let extensions = [
-        "rs", "js", "ts", "py", "go", "java", "c", "cpp", "html", "css",
-        "json", "yaml", "yml", "toml", "md", "sql", "sh", "bash", "rb",
+        "rs", "js", "ts", "py", "go", "java", "c", "cpp", "html", "css", "json", "yaml", "yml",
+        "toml", "md", "sql", "sh", "bash", "rb",
     ];
     for ext in extensions {
         let path = format!("test.{ext}");
-        assert!(highlight::is_highlightable(&path), "{ext} should be highlightable");
+        assert!(
+            highlight::is_highlightable(&path),
+            "{ext} should be highlightable"
+        );
     }
 }
 
@@ -43,8 +46,14 @@ fn not_highlightable_no_extension() {
 #[test]
 fn diff_to_pango_basic() {
     let out = highlight::diff_to_pango("old line", "new line", "test.txt");
-    assert!(out.contains("#ffeef0"), "removed lines have red background: {out}");
-    assert!(out.contains("#e6ffed"), "added lines have green background: {out}");
+    assert!(
+        out.contains("#ffeef0"),
+        "removed lines have red background: {out}"
+    );
+    assert!(
+        out.contains("#e6ffed"),
+        "added lines have green background: {out}"
+    );
     assert!(out.contains("- "), "removed prefix: {out}");
     assert!(out.contains("+ "), "added prefix: {out}");
 }
@@ -62,7 +71,10 @@ fn diff_to_pango_multiline() {
 #[test]
 fn diff_to_pango_escapes_html() {
     let out = highlight::diff_to_pango("<div>", "&amp;", "test.html");
-    assert!(out.contains("&lt;") || out.contains("&lt;div&gt;"), "should escape HTML: {out}");
+    assert!(
+        out.contains("&lt;") || out.contains("&lt;div&gt;"),
+        "should escape HTML: {out}"
+    );
 }
 
 #[test]
@@ -83,7 +95,10 @@ fn diff_to_pango_with_rust_syntax() {
     let new = "fn new() {}";
     let out = highlight::diff_to_pango(old, new, "test.rs");
     // Should have syntax-colored spans
-    assert!(out.contains("foreground="), "should have syntax colors: {out}");
+    assert!(
+        out.contains("foreground="),
+        "should have syntax colors: {out}"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -163,7 +178,9 @@ fn diff_multiline_rust_preserves_syntax_colors() {
 fn highlightable_alias_extensions() {
     // mjs/cjs/jsx/tsx/yml/mdx should all be highlightable
     for ext in ["mjs", "cjs", "jsx", "tsx", "yml", "mdx"] {
-        assert!(highlight::is_highlightable(&format!("file.{ext}")),
-            "{ext} should be highlightable");
+        assert!(
+            highlight::is_highlightable(&format!("file.{ext}")),
+            "{ext} should be highlightable"
+        );
     }
 }

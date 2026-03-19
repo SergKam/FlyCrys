@@ -62,7 +62,10 @@ fn md_heading_h3() {
 #[test]
 fn md_inline_code() {
     let out = md_to_pango_light("use `foo_bar` here");
-    assert!(out.contains("font_family=\"monospace\""), "inline code uses monospace span: {out}");
+    assert!(
+        out.contains("font_family=\"monospace\""),
+        "inline code uses monospace span: {out}"
+    );
     assert!(out.contains("foo_bar"));
 }
 
@@ -76,14 +79,20 @@ fn md_inline_code_with_special_chars() {
 #[test]
 fn md_code_block() {
     let out = md_to_pango_light("```rust\nfn main() {}\n```");
-    assert!(out.contains("monospace"), "code block should use monospace: {out}");
+    assert!(
+        out.contains("monospace"),
+        "code block should use monospace: {out}"
+    );
     assert!(out.contains("fn main()"));
 }
 
 #[test]
 fn md_code_block_escapes_html() {
     let out = md_to_pango_light("```\n<div>&</div>\n```");
-    assert!(out.contains("&lt;div&gt;"), "code block should escape HTML: {out}");
+    assert!(
+        out.contains("&lt;div&gt;"),
+        "code block should escape HTML: {out}"
+    );
     assert!(out.contains("&amp;"));
 }
 
@@ -96,13 +105,19 @@ fn md_unordered_list() {
 #[test]
 fn md_nested_list() {
     let out = md_to_pango_light("- outer\n  - inner");
-    assert!(out.matches('•').count() >= 2, "nested list should have bullets: {out}");
+    assert!(
+        out.matches('•').count() >= 2,
+        "nested list should have bullets: {out}"
+    );
 }
 
 #[test]
 fn md_link() {
     let out = md_to_pango_light("[click](https://example.com)");
-    assert!(out.contains("underline"), "link should be underlined: {out}");
+    assert!(
+        out.contains("underline"),
+        "link should be underlined: {out}"
+    );
     assert!(out.contains("click"), "link text present: {out}");
 }
 
@@ -122,7 +137,10 @@ fn md_horizontal_rule() {
 #[test]
 fn md_bold_italic_combined() {
     let out = md_to_pango_light("***bold italic***");
-    assert!(out.contains("<b>") || out.contains("<i>"), "combined formatting: {out}");
+    assert!(
+        out.contains("<b>") || out.contains("<i>"),
+        "combined formatting: {out}"
+    );
 }
 
 #[test]
@@ -142,20 +160,28 @@ fn md_file_path_with_line_number() {
 #[test]
 fn md_non_file_path_in_code() {
     let out = md_to_pango_light("use `HashMap`");
-    assert!(!out.contains("file://"), "non-path code shouldn't link: {out}");
+    assert!(
+        !out.contains("file://"),
+        "non-path code shouldn't link: {out}"
+    );
 }
 
 #[test]
 fn md_file_path_in_text() {
     let out = md_to_pango_light("edit /home/user/src/main.rs now");
-    assert!(out.contains("file://"), "inline file paths should link: {out}");
+    assert!(
+        out.contains("file://"),
+        "inline file paths should link: {out}"
+    );
 }
 
 #[test]
 fn md_unclosed_bold_is_literal() {
     let out = md_to_pango_light("**bold start");
-    assert!(out.contains("**bold start") || out.contains("bold start"),
-        "unmatched ** treated as text: {out}");
+    assert!(
+        out.contains("**bold start") || out.contains("bold start"),
+        "unmatched ** treated as text: {out}"
+    );
 }
 
 #[test]
@@ -195,7 +221,11 @@ fn md_deeply_nested_formatting() {
 fn md_multiple_code_blocks_with_different_langs() {
     let md = "```rust\nfn main() {}\n```\n\nText between.\n\n```python\nprint('hi')\n```";
     let out = md_to_pango_light(md);
-    assert_eq!(out.matches("monospace").count(), 2, "two code blocks: {out}");
+    assert_eq!(
+        out.matches("monospace").count(),
+        2,
+        "two code blocks: {out}"
+    );
     assert!(out.contains("fn main()"));
     assert!(out.contains("print("));
     assert!(out.contains("Text between"));
@@ -224,7 +254,10 @@ fn md_special_chars_everywhere() {
     let md = "# Heading & \"quoted\"\n\n`code <with> &`\n\n- item & stuff\n\n> blockquote & more";
     let out = md_to_pango_light(md);
     assert!(out.contains("&amp;"), "ampersand escaped: {out}");
-    assert!(out.contains("&lt;with&gt;"), "angle brackets in code escaped: {out}");
+    assert!(
+        out.contains("&lt;with&gt;"),
+        "angle brackets in code escaped: {out}"
+    );
     assert!(out.contains("Heading"), "heading text: {out}");
 }
 
@@ -270,9 +303,13 @@ And a file reference: `/home/user/src/main.rs:42`
 "#;
     let out = md_to_pango_light(md);
 
-    let opens = out.matches("<span").count() + out.matches("<b>").count()
-        + out.matches("<i>").count() + out.matches("<s>").count();
-    let closes = out.matches("</span>").count() + out.matches("</b>").count()
-        + out.matches("</i>").count() + out.matches("</s>").count();
+    let opens = out.matches("<span").count()
+        + out.matches("<b>").count()
+        + out.matches("<i>").count()
+        + out.matches("<s>").count();
+    let closes = out.matches("</span>").count()
+        + out.matches("</b>").count()
+        + out.matches("</i>").count()
+        + out.matches("</s>").count();
     assert_eq!(opens, closes, "all tags should be balanced:\n{out}");
 }

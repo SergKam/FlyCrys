@@ -134,7 +134,10 @@ fn workspace_config_serde_roundtrip() {
     let restored: WorkspaceConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.id, ws.id);
     assert_eq!(restored.working_directory, "/home/user/test");
-    assert_eq!(restored.open_file.as_deref(), Some("/home/user/test/main.rs"));
+    assert_eq!(
+        restored.open_file.as_deref(),
+        Some("/home/user/test/main.rs")
+    );
     assert!(restored.terminal_visible);
     assert_eq!(restored.tree_pane_width, 400);
 }
@@ -177,7 +180,10 @@ fn workspace_save_load_roundtrip() {
     session::save_workspace_config(&ws);
     let loaded = session::load_workspace_config(&ws.id).unwrap();
     assert_eq!(loaded.working_directory, "/home/user/myproject");
-    assert_eq!(loaded.open_file.as_deref(), Some("/home/user/myproject/lib.rs"));
+    assert_eq!(
+        loaded.open_file.as_deref(),
+        Some("/home/user/myproject/lib.rs")
+    );
 }
 
 #[test]
@@ -287,7 +293,10 @@ fn full_app_state_restore_flow() {
     // The active workspace (index 1) should have Security profile and open file
     let active = &workspaces[1];
     assert_eq!(active.agent_1_profile, "Security");
-    assert_eq!(active.open_file.as_deref(), Some("/home/user/backend/src/main.rs"));
+    assert_eq!(
+        active.open_file.as_deref(),
+        Some("/home/user/backend/src/main.rs")
+    );
     assert!(active.terminal_visible);
 
     // Agent profiles referenced by workspaces should be loadable
@@ -387,7 +396,8 @@ fn workspace_config_missing_optional_fields_uses_defaults() {
             "open_file":null,
             "terminal_visible":false
         }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let ws = session::load_workspace_config("minimal").unwrap();
     assert_eq!(ws.agent_1_profile, "Default");
@@ -451,7 +461,10 @@ fn workspace_config_update_preserves_id() {
     assert_eq!(loaded.id, original_id);
     assert_eq!(loaded.tree_pane_width, 500);
     assert_eq!(loaded.agent_pane_width, 700);
-    assert_eq!(loaded.open_file.as_deref(), Some("/home/user/project/README.md"));
+    assert_eq!(
+        loaded.open_file.as_deref(),
+        Some("/home/user/project/README.md")
+    );
     assert!(loaded.terminal_visible);
     assert_eq!(loaded.agent_1_profile, "Security");
     assert_eq!(loaded.agent_1_session_id.as_deref(), Some("sess-xyz"));

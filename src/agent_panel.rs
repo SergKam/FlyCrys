@@ -1,13 +1,15 @@
-use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::agent_process::{AgentEvent, AgentProcess, AgentSpawnConfig, ImageAttachment, ProcessState};
+use crate::agent_process::{
+    AgentEvent, AgentProcess, AgentSpawnConfig, ImageAttachment, ProcessState,
+};
 use crate::agent_widgets;
 use crate::session::{AgentConfig, ChatMessage};
 
@@ -54,6 +56,7 @@ struct AttachedImage {
     texture: gtk::gdk::Texture,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_agent_panel(
     on_open_file: Rc<dyn Fn(&str)>,
     is_dark: Rc<Cell<bool>>,
@@ -311,7 +314,13 @@ pub fn create_agent_panel(
                             on_open.clone(),
                         );
                     agent_widgets::fill_tool_result(
-                        &content_box, &spinner, &expander, output, *is_error, tool_name, tool_input,
+                        &content_box,
+                        &spinner,
+                        &expander,
+                        output,
+                        *is_error,
+                        tool_name,
+                        tool_input,
                     );
                     message_list.append(&container);
                 }
@@ -406,20 +415,19 @@ pub fn create_agent_panel(
                 window.as_ref(),
                 None::<&gtk::gio::Cancellable>,
                 move |result| {
-                    if let Ok(file) = result {
-                        if let Some(path) = file.path() {
-                            if let Ok(bytes) = std::fs::read(&path) {
-                                let mime = mime_for_path(&path);
-                                let gbytes = glib::Bytes::from(&bytes);
-                                if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                                    att.borrow_mut().push(AttachedImage {
-                                        bytes,
-                                        mime_type: mime,
-                                        texture,
-                                    });
-                                    rebuild_attach_bar(&att, &bar);
-                                }
-                            }
+                    if let Ok(file) = result
+                        && let Some(path) = file.path()
+                        && let Ok(bytes) = std::fs::read(&path)
+                    {
+                        let mime = mime_for_path(&path);
+                        let gbytes = glib::Bytes::from(&bytes);
+                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                            att.borrow_mut().push(AttachedImage {
+                                bytes,
+                                mime_type: mime,
+                                texture,
+                            });
+                            rebuild_attach_bar(&att, &bar);
                         }
                     }
                 },
@@ -469,9 +477,11 @@ pub fn create_agent_panel(
 
             // Record in history
             if !text.is_empty() {
-                state.borrow().chat_history.borrow_mut().push(ChatMessage::User {
-                    text: text.clone(),
-                });
+                state
+                    .borrow()
+                    .chat_history
+                    .borrow_mut()
+                    .push(ChatMessage::User { text: text.clone() });
             }
 
             // Build API image attachments
@@ -502,9 +512,9 @@ pub fn create_agent_panel(
 
                 let wd = s.working_dir.clone();
                 if let Err(err_msg) = s.process.spawn(sender, &wd, &spawn_config) {
-                    let err = agent_widgets::create_system_message(
-                        &format!("Failed to start claude CLI: {err_msg}"),
-                    );
+                    let err = agent_widgets::create_system_message(&format!(
+                        "Failed to start claude CLI: {err_msg}"
+                    ));
                     message_list.append(&err);
                     return;
                 }
@@ -575,20 +585,17 @@ pub fn create_agent_panel(
             if formats.contains_type(gtk::gdk::Texture::static_type()) {
                 let att = Rc::clone(&att_key);
                 let bar = bar_key.clone();
-                clipboard.read_texture_async(
-                    None::<&gtk::gio::Cancellable>,
-                    move |result| {
-                        if let Ok(Some(texture)) = result {
-                            let png_bytes = texture.save_to_png_bytes();
-                            att.borrow_mut().push(AttachedImage {
-                                bytes: png_bytes.to_vec(),
-                                mime_type: "image/png".to_string(),
-                                texture,
-                            });
-                            rebuild_attach_bar(&att, &bar);
-                        }
-                    },
-                );
+                clipboard.read_texture_async(None::<&gtk::gio::Cancellable>, move |result| {
+                    if let Ok(Some(texture)) = result {
+                        let png_bytes = texture.save_to_png_bytes();
+                        att.borrow_mut().push(AttachedImage {
+                            bytes: png_bytes.to_vec(),
+                            mime_type: "image/png".to_string(),
+                            texture,
+                        });
+                        rebuild_attach_bar(&att, &bar);
+                    }
+                });
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -660,9 +667,15 @@ pub fn create_agent_panel(
     {
         let action_group = gio::SimpleActionGroup::new();
         let commands: &[(&str, &str)] = &[
-            ("quick-commit", "commit all changes with a meaningful message"),
+            (
+                "quick-commit",
+                "commit all changes with a meaningful message",
+            ),
             ("quick-pr", "create a pull request for current branch"),
-            ("quick-docs", "update documentation to reflect recent changes"),
+            (
+                "quick-docs",
+                "update documentation to reflect recent changes",
+            ),
             ("quick-test", "run lint, build, and tests, fix any errors"),
         ];
         for (action_name, prompt_text) in commands {
@@ -682,10 +695,7 @@ pub fn create_agent_panel(
     (panel, input_view)
 }
 
-fn rebuild_attach_bar(
-    attachments: &Rc<RefCell<Vec<AttachedImage>>>,
-    attach_bar: &gtk::Box,
-) {
+fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar: &gtk::Box) {
     while let Some(child) = attach_bar.first_child() {
         attach_bar.remove(&child);
     }
@@ -749,7 +759,9 @@ fn handle_event(
     event: AgentEvent,
 ) {
     match event {
-        AgentEvent::System { session_id, model, .. } => {
+        AgentEvent::System {
+            session_id, model, ..
+        } => {
             let mut s = state.borrow_mut();
             // Capture session_id for continuation
             if let Some(ref id) = session_id {
@@ -757,10 +769,10 @@ fn handle_event(
                 (s.on_session_id_change)(Some(id.clone()));
             }
             // Parse context window from model name (e.g., "claude-opus-4-6[1m]")
-            if let Some(ref model_name) = model {
-                if let Some(ctx) = parse_context_window(model_name) {
-                    s.context_window_max = ctx;
-                }
+            if let Some(ref model_name) = model
+                && let Some(ctx) = parse_context_window(model_name)
+            {
+                s.context_window_max = ctx;
             }
         }
 
@@ -845,17 +857,21 @@ fn handle_event(
             s.cost_label.set_text(&format!("${:.2}", total_cost_usd));
 
             // Extract context window size from modelUsage (most accurate source)
-            if let Some(ref mu) = model_usage {
-                if let Some(obj) = mu.as_object() {
-                    for (_model_name, info) in obj {
-                        if let Some(ctx) = info.get("contextWindow").and_then(|v| v.as_u64()) {
-                            if ctx > 0 {
-                                s.context_window_max = ctx;
-                                // Recalculate percentage with correct window
-                                let pct = (s.context_tokens as f64 / ctx as f64 * 100.0) as u32;
-                                s.token_label.set_text(&format!("{} ({}%)", format_token_count(s.context_tokens), pct));
-                            }
-                        }
+            if let Some(ref mu) = model_usage
+                && let Some(obj) = mu.as_object()
+            {
+                for (_model_name, info) in obj {
+                    if let Some(ctx) = info.get("contextWindow").and_then(|v| v.as_u64())
+                        && ctx > 0
+                    {
+                        s.context_window_max = ctx;
+                        // Recalculate percentage with correct window
+                        let pct = (s.context_tokens as f64 / ctx as f64 * 100.0) as u32;
+                        s.token_label.set_text(&format!(
+                            "{} ({}%)",
+                            format_token_count(s.context_tokens),
+                            pct
+                        ));
                     }
                 }
             }
@@ -897,12 +913,11 @@ fn handle_event(
 }
 
 fn remove_thinking_spinner(state: &mut PanelState) {
-    if let Some(spinner) = state.thinking_spinner.take() {
-        if let Some(parent) = spinner.parent() {
-            if let Some(parent_box) = parent.downcast_ref::<gtk::Box>() {
-                parent_box.remove(&spinner);
-            }
-        }
+    if let Some(spinner) = state.thinking_spinner.take()
+        && let Some(parent) = spinner.parent()
+        && let Some(parent_box) = parent.downcast_ref::<gtk::Box>()
+    {
+        parent_box.remove(&spinner);
     }
 }
 
@@ -916,30 +931,43 @@ fn handle_stream_event(
         "message_start" => {
             // Extract total context usage from message.usage
             // Real context = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-            if let Some(ref msg) = ev.message {
-                if let Some(usage) = msg.get("usage") {
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let total_input = input + cache_create + cache_read;
-                    let mut s = state.borrow_mut();
-                    s.context_tokens = total_input;
-                    let pct = (total_input as f64 / s.context_window_max as f64 * 100.0) as u32;
-                    s.token_label.set_text(&format!("{} ({}%)", format_token_count(total_input), pct));
-                }
+            if let Some(ref msg) = ev.message
+                && let Some(usage) = msg.get("usage")
+            {
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cache_create = usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cache_read = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let total_input = input + cache_create + cache_read;
+                let mut s = state.borrow_mut();
+                s.context_tokens = total_input;
+                let pct = (total_input as f64 / s.context_window_max as f64 * 100.0) as u32;
+                s.token_label
+                    .set_text(&format!("{} ({}%)", format_token_count(total_input), pct));
             }
         }
 
         "message_delta" => {
             // Update token display: total context = all input types + output tokens
             if let Some(ref usage) = ev.usage {
-                let total_input = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens;
+                let total_input = usage.input_tokens
+                    + usage.cache_creation_input_tokens
+                    + usage.cache_read_input_tokens;
                 let total = total_input + usage.output_tokens;
                 let s = state.borrow();
                 // Update stored context_tokens if we got better data
                 // (can't mutate here easily, but message_start already set it)
                 let pct = (total as f64 / s.context_window_max as f64 * 100.0) as u32;
-                s.token_label.set_text(&format!("{} ({}%)", format_token_count(total), pct));
+                s.token_label
+                    .set_text(&format!("{} ({}%)", format_token_count(total), pct));
             }
         }
 
@@ -982,7 +1010,11 @@ fn handle_stream_event(
                         if let Some(ref text) = delta.text {
                             s.current_text.push_str(text);
                             if let Some(ref label) = s.current_text_label {
-                                agent_widgets::update_assistant_text(label, &s.current_text, s.is_dark.get());
+                                agent_widgets::update_assistant_text(
+                                    label,
+                                    &s.current_text,
+                                    s.is_dark.get(),
+                                );
                             }
                         }
                     }
@@ -1029,9 +1061,11 @@ fn handle_stream_event(
                 s.current_tool_input.clear();
             } else if !s.current_text.is_empty() {
                 // Text block completed — record in history
-                s.chat_history.borrow_mut().push(ChatMessage::AssistantText {
-                    text: s.current_text.clone(),
-                });
+                s.chat_history
+                    .borrow_mut()
+                    .push(ChatMessage::AssistantText {
+                        text: s.current_text.clone(),
+                    });
             }
             // Clear text tracking (block is done)
             s.current_text_label = None;
@@ -1077,10 +1111,7 @@ fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
             return cmd.to_string();
         }
         if let Some(q) = val.get("pattern").and_then(|v| v.as_str()) {
-            let path = val
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
             return format!("{q} {path}").trim().to_string();
         }
         if let Some(p) = val.get("file_path").and_then(|v| v.as_str()) {
@@ -1091,10 +1122,10 @@ fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
         }
         // Fallback: first string value
         for (_k, v) in val.as_object().into_iter().flatten() {
-            if let Some(s) = v.as_str() {
-                if s.len() <= 80 {
-                    return s.to_string();
-                }
+            if let Some(s) = v.as_str()
+                && s.len() <= 80
+            {
+                return s.to_string();
             }
         }
     }

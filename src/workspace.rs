@@ -1,7 +1,7 @@
-use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -24,10 +24,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(
-        config: WorkspaceConfig,
-        is_dark: Rc<Cell<bool>>,
-    ) -> Self {
+    pub fn new(config: WorkspaceConfig, is_dark: Rc<Cell<bool>>) -> Self {
         let working_dir = PathBuf::from(&config.working_directory);
         let config = Rc::new(RefCell::new(config));
 
@@ -70,13 +67,20 @@ impl Workspace {
         let left_click = gtk::GestureClick::new();
         left_click.set_button(1);
         left_click.connect_pressed(glib::clone!(
-            #[weak] list_view,
-            #[weak] text_view,
-            #[weak] gutter,
-            #[weak] path_label,
-            #[strong] current_file,
-            #[strong] is_dark,
-            #[strong] config,
+            #[weak]
+            list_view,
+            #[weak]
+            text_view,
+            #[weak]
+            gutter,
+            #[weak]
+            path_label,
+            #[strong]
+            current_file,
+            #[strong]
+            is_dark,
+            #[strong]
+            config,
             move |_gesture, n_press, x, y| {
                 if n_press != 1 {
                     return;
@@ -87,30 +91,34 @@ impl Workspace {
                 let mut current = Some(picked.clone());
                 while let Some(w) = current {
                     if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                        if let Some(row) = expander.list_row() {
-                            if let Some(entry) = row.item().and_downcast::<FileEntry>() {
-                                if entry.is_dir() {
-                                    let on_content = expander.child().is_some_and(|child| {
-                                        let child_w: gtk::Widget = child.upcast();
-                                        let mut check = Some(picked.clone());
-                                        while let Some(c) = check {
-                                            if c == child_w {
-                                                return true;
-                                            }
-                                            check = c.parent();
+                        if let Some(row) = expander.list_row()
+                            && let Some(entry) = row.item().and_downcast::<FileEntry>()
+                        {
+                            if entry.is_dir() {
+                                let on_content = expander.child().is_some_and(|child| {
+                                    let child_w: gtk::Widget = child.upcast();
+                                    let mut check = Some(picked.clone());
+                                    while let Some(c) = check {
+                                        if c == child_w {
+                                            return true;
                                         }
-                                        false
-                                    });
-                                    if on_content {
-                                        row.set_expanded(!row.is_expanded());
+                                        check = c.parent();
                                     }
-                                } else {
-                                    let path = entry.path();
-                                    let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                                    textview::load_file(&text_view, &gutter, &path_label, &path, theme);
-                                    *current_file.borrow_mut() = path.clone();
-                                    config.borrow_mut().open_file = Some(path);
+                                    false
+                                });
+                                if on_content {
+                                    row.set_expanded(!row.is_expanded());
                                 }
+                            } else {
+                                let path = entry.path();
+                                let theme = if is_dark.get() {
+                                    highlight::DARK_THEME
+                                } else {
+                                    highlight::LIGHT_THEME
+                                };
+                                textview::load_file(&text_view, &gutter, &path_label, &path, theme);
+                                *current_file.borrow_mut() = path.clone();
+                                config.borrow_mut().open_file = Some(path);
                             }
                         }
                         return;
@@ -137,10 +145,14 @@ impl Workspace {
         let right_click = gtk::GestureClick::new();
         right_click.set_button(3);
         right_click.connect_pressed(glib::clone!(
-            #[weak] list_view,
-            #[weak] popover,
-            #[strong] ctx_path,
-            #[strong] ctx_is_dir,
+            #[weak]
+            list_view,
+            #[weak]
+            popover,
+            #[strong]
+            ctx_path,
+            #[strong]
+            ctx_is_dir,
             move |_gesture, _n_press, x, y| {
                 let Some(widget) = list_view.pick(x, y, gtk::PickFlags::DEFAULT) else {
                     return;
@@ -148,16 +160,16 @@ impl Workspace {
                 let mut current = Some(widget);
                 while let Some(w) = current {
                     if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                        if let Some(item) = expander.item() {
-                            if let Some(entry) = item.downcast_ref::<FileEntry>() {
-                                *ctx_path.borrow_mut() = entry.path();
-                                *ctx_is_dir.borrow_mut() = entry.is_dir();
+                        if let Some(item) = expander.item()
+                            && let Some(entry) = item.downcast_ref::<FileEntry>()
+                        {
+                            *ctx_path.borrow_mut() = entry.path();
+                            *ctx_is_dir.borrow_mut() = entry.is_dir();
 
-                                popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-                                    x as i32, y as i32, 1, 1,
-                                )));
-                                popover.popup();
-                            }
+                            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                                x as i32, y as i32, 1, 1,
+                            )));
+                            popover.popup();
                         }
                         return;
                     }
@@ -177,7 +189,11 @@ impl Workspace {
             let is_dark = Rc::clone(&is_dark);
             let config = Rc::clone(&config);
             Rc::new(move |file_path: &str| {
-                let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
+                let theme = if is_dark.get() {
+                    highlight::DARK_THEME
+                } else {
+                    highlight::LIGHT_THEME
+                };
                 textview::load_file(&text_view, &gutter, &path_label, file_path, theme);
                 *current_file.borrow_mut() = file_path.to_string();
                 config.borrow_mut().open_file = Some(file_path.to_string());
@@ -193,9 +209,9 @@ impl Workspace {
         tab_spinner.set_size_request(12, 12);
 
         // Chat history
-        let chat_history = Rc::new(RefCell::new(
-            session::load_chat_history(&config.borrow().id),
-        ));
+        let chat_history = Rc::new(RefCell::new(session::load_chat_history(
+            &config.borrow().id,
+        )));
 
         // Agent panel
         let (agent_panel_1, agent_input_1) = {
@@ -309,7 +325,10 @@ impl Workspace {
 
         let gutter_menu = gio::Menu::new();
         gutter_menu.append(Some("Copy Line Link"), Some("ws.copy-line-link"));
-        gutter_menu.append(Some("Add Line Link to Chat"), Some("ws.add-line-link-to-chat"));
+        gutter_menu.append(
+            Some("Add Line Link to Chat"),
+            Some("ws.add-line-link-to-chat"),
+        );
 
         let gutter_popover = gtk::PopoverMenu::from_model(Some(&gutter_menu));
         gutter_popover.set_parent(&gutter);
@@ -318,22 +337,21 @@ impl Workspace {
         let gutter_click = gtk::GestureClick::new();
         gutter_click.set_button(3);
         gutter_click.connect_pressed(glib::clone!(
-            #[weak] gutter,
-            #[weak] gutter_popover,
-            #[strong] gutter_ctx_line,
+            #[weak]
+            gutter,
+            #[weak]
+            gutter_popover,
+            #[strong]
+            gutter_ctx_line,
             move |gesture, _n_press, x, y| {
                 // Claim the sequence so the default TextView context menu is suppressed
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                let (bx, by) = gutter.window_to_buffer_coords(
-                    gtk::TextWindowType::Widget,
-                    x as i32,
-                    y as i32,
-                );
+                let (bx, by) =
+                    gutter.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
                 if let Some(iter) = gutter.iter_at_location(bx, by) {
                     gutter_ctx_line.set(iter.line() as u32 + 1);
-                    gutter_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-                        x as i32, y as i32, 1, 1,
-                    )));
+                    gutter_popover
+                        .set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     gutter_popover.popup();
                 }
             }
@@ -378,20 +396,20 @@ impl Workspace {
         let drag_source = gtk::DragSource::new();
         drag_source.set_actions(gtk::gdk::DragAction::COPY);
         drag_source.connect_prepare(glib::clone!(
-            #[weak] list_view,
-            #[upgrade_or] None,
+            #[weak]
+            list_view,
+            #[upgrade_or]
+            None,
             move |_source, x, y| {
                 let widget = list_view.pick(x, y, gtk::PickFlags::DEFAULT)?;
                 let mut current = Some(widget);
                 while let Some(w) = current {
                     if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                        if let Some(item) = expander.item() {
-                            if let Some(entry) = item.downcast_ref::<FileEntry>() {
-                                let path = entry.path();
-                                return Some(gtk::gdk::ContentProvider::for_value(
-                                    &path.to_value(),
-                                ));
-                            }
+                        if let Some(item) = expander.item()
+                            && let Some(entry) = item.downcast_ref::<FileEntry>()
+                        {
+                            let path = entry.path();
+                            return Some(gtk::gdk::ContentProvider::for_value(&path.to_value()));
                         }
                         return None;
                     }
@@ -405,8 +423,10 @@ impl Workspace {
         // Drop target on agent input
         let drop_target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
         drop_target.connect_drop(glib::clone!(
-            #[weak] agent_input_1,
-            #[upgrade_or] false,
+            #[weak]
+            agent_input_1,
+            #[upgrade_or]
+            false,
             move |_target, value, _x, _y| {
                 if let Ok(path) = value.get::<String>() {
                     append_path_to_input(&agent_input_1, &path);
@@ -420,8 +440,10 @@ impl Workspace {
         // Drop on agent panel area
         let panel_drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::COPY);
         panel_drop.connect_drop(glib::clone!(
-            #[weak] agent_input_1,
-            #[upgrade_or] false,
+            #[weak]
+            agent_input_1,
+            #[upgrade_or]
+            false,
             move |_target, value, _x, _y| {
                 if let Ok(path) = value.get::<String>() {
                     append_path_to_input(&agent_input_1, &path);
@@ -436,7 +458,8 @@ impl Workspace {
         {
             let config = Rc::clone(&config);
             paned.connect_position_notify(glib::clone!(
-                #[strong] config,
+                #[strong]
+                config,
                 move |p| {
                     config.borrow_mut().tree_pane_width = p.position();
                 }
@@ -445,7 +468,8 @@ impl Workspace {
         {
             let config = Rc::clone(&config);
             outer_paned.connect_position_notify(glib::clone!(
-                #[strong] config,
+                #[strong]
+                config,
                 move |p| {
                     config.borrow_mut().agent_pane_width = p.position();
                 }
@@ -454,7 +478,8 @@ impl Workspace {
         {
             let config = Rc::clone(&config);
             right_paned.connect_position_notify(glib::clone!(
-                #[strong] config,
+                #[strong]
+                config,
                 move |p| {
                     config.borrow_mut().editor_terminal_split = p.position();
                 }
@@ -464,7 +489,11 @@ impl Workspace {
         {
             let open_file = config.borrow().open_file.clone();
             if let Some(ref path) = open_file {
-                let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
+                let theme = if is_dark.get() {
+                    highlight::DARK_THEME
+                } else {
+                    highlight::LIGHT_THEME
+                };
                 textview::load_file(&text_view, &gutter, &path_label, path, theme);
                 *current_file.borrow_mut() = path.clone();
                 select_file_in_tree(&selection, path);
@@ -535,7 +564,14 @@ impl Workspace {
             })
         };
 
-        Workspace { root, config, tab_spinner, chat_history, on_theme_rehighlight, _file_watcher: file_watcher }
+        Workspace {
+            root,
+            config,
+            tab_spinner,
+            chat_history,
+            on_theme_rehighlight,
+            _file_watcher: file_watcher,
+        }
     }
 }
 

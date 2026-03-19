@@ -1,5 +1,5 @@
-use gtk4 as gtk;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::rc::Rc;
 
 /// User message bubble (right-aligned)
@@ -166,19 +166,19 @@ pub fn fill_tool_result(
     }
 
     // For Edit tool, try to show a highlighted diff
-    if tool_name == "Edit" {
-        if let Some(diff_markup) = create_edit_diff_markup(tool_input) {
-            let label = gtk::Label::new(None);
-            label.set_use_markup(true);
-            label.set_markup(&diff_markup);
-            label.set_wrap(true);
-            label.set_xalign(0.0);
-            label.set_selectable(true);
-            label.add_css_class("monospace");
-            content_box.append(&label);
-            expander.set_visible(true);
-            return;
-        }
+    if tool_name == "Edit"
+        && let Some(diff_markup) = create_edit_diff_markup(tool_input)
+    {
+        let label = gtk::Label::new(None);
+        label.set_use_markup(true);
+        label.set_markup(&diff_markup);
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+        label.set_selectable(true);
+        label.add_css_class("monospace");
+        content_box.append(&label);
+        expander.set_visible(true);
+        return;
     }
 
     let text = if output.len() > 2000 {
@@ -217,10 +217,7 @@ fn create_edit_diff_markup(tool_input: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(tool_input).ok()?;
     let old_string = val.get("old_string")?.as_str()?;
     let new_string = val.get("new_string")?.as_str()?;
-    let file_path = val
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let file_path = val.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
 
     Some(crate::highlight::diff_to_pango(
         old_string, new_string, file_path,
