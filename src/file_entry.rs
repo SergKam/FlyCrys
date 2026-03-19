@@ -1,7 +1,7 @@
-use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
+use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 
 mod imp {

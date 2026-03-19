@@ -217,12 +217,15 @@ pub fn list_agent_configs() -> Vec<AgentConfig> {
     let mut configs = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
-                if let Ok(data) = fs::read_to_string(entry.path()) {
-                    if let Ok(config) = serde_json::from_str::<AgentConfig>(&data) {
-                        configs.push(config);
-                    }
-                }
+            if entry
+                .path()
+                .extension()
+                .map(|e| e == "json")
+                .unwrap_or(false)
+                && let Ok(data) = fs::read_to_string(entry.path())
+                && let Ok(config) = serde_json::from_str::<AgentConfig>(&data)
+            {
+                configs.push(config);
             }
         }
     }

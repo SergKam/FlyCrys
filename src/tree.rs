@@ -1,6 +1,6 @@
-use gtk4 as gtk;
 use gtk::gio;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,12 @@ struct DirEntry {
 
 pub fn create_file_tree(
     root_dir: &Path,
-) -> (gtk::ScrolledWindow, gtk::ListView, gtk::SingleSelection, DirStoreMap) {
+) -> (
+    gtk::ScrolledWindow,
+    gtk::ListView,
+    gtk::SingleSelection,
+    DirStoreMap,
+) {
     let dir_stores: DirStoreMap = Rc::new(RefCell::new(HashMap::new()));
 
     let root_store = create_directory_list(root_dir);
@@ -64,10 +69,7 @@ pub fn create_file_tree(
 
     factory.connect_bind(|_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
-        let row = list_item
-            .item()
-            .and_downcast::<gtk::TreeListRow>()
-            .unwrap();
+        let row = list_item.item().and_downcast::<gtk::TreeListRow>().unwrap();
         let entry = row.item().and_downcast::<FileEntry>().unwrap();
 
         let expander = list_item
@@ -80,10 +82,7 @@ pub fn create_file_tree(
         let icon = hbox.first_child().and_downcast::<gtk::Image>().unwrap();
         icon.set_icon_name(Some(&entry.icon_name()));
 
-        let label = icon
-            .next_sibling()
-            .and_downcast::<gtk::Label>()
-            .unwrap();
+        let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&entry.name());
     });
 
@@ -125,13 +124,13 @@ pub fn refresh_directory(store: &gio::ListStore, dir: &Path, dir_stores: &DirSto
     let mut i = store.n_items();
     while i > 0 {
         i -= 1;
-        if let Some(entry) = store.item(i).and_downcast::<FileEntry>() {
-            if !desired_paths.contains(&entry.path()) {
-                if entry.is_dir() {
-                    dir_stores.borrow_mut().remove(&PathBuf::from(entry.path()));
-                }
-                store.remove(i);
+        if let Some(entry) = store.item(i).and_downcast::<FileEntry>()
+            && !desired_paths.contains(&entry.path())
+        {
+            if entry.is_dir() {
+                dir_stores.borrow_mut().remove(&PathBuf::from(entry.path()));
             }
+            store.remove(i);
         }
     }
 

@@ -1,6 +1,5 @@
-use gtk4 as gtk;
 use gtk::glib;
-use gtk::prelude::*;
+use gtk4 as gtk;
 use vte4::prelude::*;
 
 pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
@@ -36,7 +35,8 @@ pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
 
     // Close button hides the panel
     close_btn.connect_clicked(glib::clone!(
-        #[weak] vbox,
+        #[weak]
+        vbox,
         move |_| {
             vbox.set_visible(false);
         }

@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -15,13 +15,9 @@ pub enum AgentEvent {
         model: Option<String>,
     },
     #[serde(rename = "stream_event")]
-    StreamEvent {
-        event: StreamEventData,
-    },
+    StreamEvent { event: StreamEventData },
     #[serde(rename = "assistant")]
-    Assistant {
-        message: AssistantMessage,
-    },
+    Assistant { message: AssistantMessage },
     #[serde(rename = "user")]
     User {
         tool_use_result: Option<ToolUseResult>,
@@ -168,27 +164,22 @@ fn create_pty_pair() -> Option<(OwnedFd, OwnedFd)> {
     }
 }
 
-fn spawn_reader<R: std::io::Read + Send + 'static>(
-    reader: R,
-    sender: mpsc::Sender<AgentEvent>,
-) {
+fn spawn_reader<R: std::io::Read + Send + 'static>(reader: R, sender: mpsc::Sender<AgentEvent>) {
     std::thread::spawn(move || {
         let reader = BufReader::new(reader);
         for line in reader.lines() {
             match line {
-                Ok(line) if !line.is_empty() => {
-                    match serde_json::from_str::<AgentEvent>(&line) {
-                        Ok(event) => {
-                            if sender.send(event).is_err() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            let preview: String = line.chars().take(200).collect();
-                            eprintln!("flycrys: failed to parse agent JSON: {e} — {preview}");
+                Ok(line) if !line.is_empty() => match serde_json::from_str::<AgentEvent>(&line) {
+                    Ok(event) => {
+                        if sender.send(event).is_err() {
+                            break;
                         }
                     }
-                }
+                    Err(e) => {
+                        let preview: String = line.chars().take(200).collect();
+                        eprintln!("flycrys: failed to parse agent JSON: {e} — {preview}");
+                    }
+                },
                 Err(_) => break,
                 _ => {}
             }
@@ -222,6 +213,12 @@ pub struct AgentProcess {
     stdin: Option<ChildStdin>,
     pid: Option<u32>,
     pub state: ProcessState,
+}
+
+impl Default for AgentProcess {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentProcess {
@@ -263,10 +260,10 @@ impl AgentProcess {
             .stderr(Stdio::piped());
 
         // Agent profile options
-        if let Some(ref prompt) = config.system_prompt {
-            if !prompt.is_empty() {
-                cmd.arg("--system-prompt").arg(prompt);
-            }
+        if let Some(ref prompt) = config.system_prompt
+            && !prompt.is_empty()
+        {
+            cmd.arg("--system-prompt").arg(prompt);
         }
         for tool in &config.allowed_tools {
             cmd.arg("--allowedTools").arg(tool);
@@ -346,20 +343,24 @@ impl AgentProcess {
     }
 
     pub fn pause(&mut self) {
-        if let Some(pid) = self.pid {
-            if self.state == ProcessState::Running {
-                unsafe { libc::kill(pid as i32, libc::SIGSTOP); }
-                self.state = ProcessState::Paused;
+        if let Some(pid) = self.pid
+            && self.state == ProcessState::Running
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGSTOP);
             }
+            self.state = ProcessState::Paused;
         }
     }
 
     pub fn resume(&mut self) {
-        if let Some(pid) = self.pid {
-            if self.state == ProcessState::Paused {
-                unsafe { libc::kill(pid as i32, libc::SIGCONT); }
-                self.state = ProcessState::Running;
+        if let Some(pid) = self.pid
+            && self.state == ProcessState::Paused
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGCONT);
             }
+            self.state = ProcessState::Running;
         }
     }
 
@@ -367,9 +368,13 @@ impl AgentProcess {
         if let Some(pid) = self.pid {
             // Resume first if paused, then interrupt
             if self.state == ProcessState::Paused {
-                unsafe { libc::kill(pid as i32, libc::SIGCONT); }
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGCONT);
+                }
             }
-            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
         }
         self.cleanup();
     }

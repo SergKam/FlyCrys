@@ -1,5 +1,5 @@
-use gtk4 as gtk;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::path::Path;
 
 use crate::highlight;
@@ -36,12 +36,11 @@ pub fn create_text_view() -> (gtk::Box, gtk::TextView, gtk::TextView, gtk::Label
         let model = gutter.observe_controllers();
         let mut to_remove: Vec<gtk::EventController> = Vec::new();
         for i in 0..model.n_items() {
-            if let Some(obj) = model.item(i) {
-                if obj.is::<gtk::GestureClick>() {
-                    if let Ok(ctrl) = obj.downcast::<gtk::EventController>() {
-                        to_remove.push(ctrl);
-                    }
-                }
+            if let Some(obj) = model.item(i)
+                && obj.is::<gtk::GestureClick>()
+                && let Ok(ctrl) = obj.downcast::<gtk::EventController>()
+            {
+                to_remove.push(ctrl);
             }
         }
         for ctrl in to_remove {

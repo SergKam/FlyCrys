@@ -1,7 +1,7 @@
-use gtk4 as gtk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -65,9 +65,7 @@ fn dark_css() -> &'static str {
 }
 
 fn main() -> glib::ExitCode {
-    let app = gtk::Application::builder()
-        .application_id(APP_ID)
-        .build();
+    let app = gtk::Application::builder().application_id(APP_ID).build();
 
     app.connect_startup(|_app| {
         let icon_theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
@@ -77,7 +75,10 @@ fn main() -> glib::ExitCode {
         let candidates = [
             exe_dir.as_ref().map(|d| d.join("icons")),
             exe_dir.as_ref().map(|d| d.join("../icons")),
-            Some(std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/icons"))),
+            Some(std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/icons"
+            ))),
         ];
         for candidate in candidates.into_iter().flatten() {
             if candidate.is_dir() {
@@ -106,17 +107,21 @@ fn build_ui(app: &gtk::Application) {
 
     // CSS
     let css = gtk::CssProvider::new();
-    css.load_from_string(if app_config.is_dark { dark_css() } else { light_css() });
+    css.load_from_string(if app_config.is_dark {
+        dark_css()
+    } else {
+        light_css()
+    });
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().unwrap(),
         &css,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    if app_config.is_dark {
-        if let Some(settings) = gtk::Settings::default() {
-            settings.set_gtk_application_prefer_dark_theme(true);
-        }
+    if app_config.is_dark
+        && let Some(settings) = gtk::Settings::default()
+    {
+        settings.set_gtk_application_prefer_dark_theme(true);
     }
 
     // Notebook for tabs
@@ -275,13 +280,8 @@ fn build_ui(app: &gtk::Application) {
         let labels = session::dedup_labels(&workspace_configs);
         for (i, ws_config) in workspace_configs.into_iter().enumerate() {
             let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
-            let label = create_tab_label(
-                &labels[i],
-                &ws.tab_spinner,
-                &notebook,
-                &ws.root,
-                &app_state,
-            );
+            let label =
+                create_tab_label(&labels[i], &ws.tab_spinner, &notebook, &ws.root, &app_state);
             notebook.append_page(&ws.root, Some(&label));
             app_state.borrow_mut().workspaces.push(ws);
         }
@@ -294,9 +294,12 @@ fn build_ui(app: &gtk::Application) {
     notebook.set_action_widget(&add_btn, gtk::PackType::End);
 
     add_btn.connect_clicked(glib::clone!(
-        #[weak] notebook,
-        #[strong] app_state,
-        #[strong] is_dark,
+        #[weak]
+        notebook,
+        #[strong]
+        app_state,
+        #[strong]
+        is_dark,
         move |btn| {
             let dialog = gtk::FileDialog::builder()
                 .title("Open Folder for New Workspace")
@@ -308,41 +311,41 @@ fn build_ui(app: &gtk::Application) {
             let app_state = Rc::clone(&app_state);
             let is_dark = Rc::clone(&is_dark);
 
-            dialog.select_folder(
-                window.as_ref(),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if let Ok(folder) = result {
-                        if let Some(path) = folder.path() {
-                            let dir = path.to_string_lossy().to_string();
-                            let ws_config = WorkspaceConfig::new(&dir);
+            dialog.select_folder(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let Ok(folder) = result
+                    && let Some(path) = folder.path()
+                {
+                    let dir = path.to_string_lossy().to_string();
+                    let ws_config = WorkspaceConfig::new(&dir);
 
-                            let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
-                            let label_text = ws.config.borrow().tab_label();
-                            let label = create_tab_label(
-                                &label_text,
-                                &ws.tab_spinner,
-                                &notebook,
-                                &ws.root,
-                                &app_state,
-                            );
-                            let page_num = notebook.append_page(&ws.root, Some(&label));
-                            notebook.set_current_page(Some(page_num as u32));
-                            notebook.set_tab_reorderable(&ws.root, true);
+                    let ws = Workspace::new(ws_config, Rc::clone(&is_dark));
+                    let label_text = ws.config.borrow().tab_label();
+                    let label = create_tab_label(
+                        &label_text,
+                        &ws.tab_spinner,
+                        &notebook,
+                        &ws.root,
+                        &app_state,
+                    );
+                    let page_num = notebook.append_page(&ws.root, Some(&label));
+                    notebook.set_current_page(Some(page_num as u32));
+                    notebook.set_tab_reorderable(&ws.root, true);
 
-                            let mut state = app_state.borrow_mut();
-                            state.config.workspace_ids.push(ws.config.borrow().id.clone());
-                            state.workspaces.push(ws);
-                        }
-                    }
-                },
-            );
+                    let mut state = app_state.borrow_mut();
+                    state
+                        .config
+                        .workspace_ids
+                        .push(ws.config.borrow().id.clone());
+                    state.workspaces.push(ws);
+                }
+            });
         }
     ));
 
     // Track active tab changes
     notebook.connect_switch_page(glib::clone!(
-        #[strong] app_state,
+        #[strong]
+        app_state,
         move |_nb, _page, page_num| {
             app_state.borrow_mut().config.active_tab = page_num as usize;
         }
@@ -372,7 +375,8 @@ fn build_ui(app: &gtk::Application) {
 
     // Save window size on close
     window.connect_close_request(glib::clone!(
-        #[strong] app_state,
+        #[strong]
+        app_state,
         move |win| {
             let (w, h) = win.default_size();
             let mut state = app_state.borrow_mut();
@@ -392,10 +396,7 @@ fn build_ui(app: &gtk::Application) {
             session::save_app_config(&state.config);
             for ws in &state.workspaces {
                 session::save_workspace_config(&ws.config.borrow());
-                session::save_chat_history(
-                    &ws.config.borrow().id,
-                    &ws.chat_history.borrow(),
-                );
+                session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
             }
 
             glib::Propagation::Proceed
@@ -410,10 +411,7 @@ fn build_ui(app: &gtk::Application) {
             session::save_app_config(&state.config);
             for ws in &state.workspaces {
                 session::save_workspace_config(&ws.config.borrow());
-                session::save_chat_history(
-                    &ws.config.borrow().id,
-                    &ws.chat_history.borrow(),
-                );
+                session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
             }
             glib::ControlFlow::Continue
         });
@@ -447,9 +445,12 @@ fn create_tab_label(
     hbox.append(&close_btn);
 
     close_btn.connect_clicked(glib::clone!(
-        #[weak] notebook,
-        #[weak] page_widget,
-        #[strong] app_state,
+        #[weak]
+        notebook,
+        #[weak]
+        page_widget,
+        #[strong]
+        app_state,
         move |btn| {
             // Confirmation dialog
             let dialog = gtk::AlertDialog::builder()
@@ -465,32 +466,28 @@ fn create_tab_label(
             let page_widget = page_widget.clone();
             let app_state = Rc::clone(&app_state);
 
-            dialog.choose(
-                window.as_ref(),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if result == Ok(1) {
-                        // User confirmed close
-                        if let Some(page_num) = notebook.page_num(&page_widget) {
-                            // Find and remove workspace from state
-                            let mut state = app_state.borrow_mut();
-                            if let Some(idx) = state
-                                .workspaces
-                                .iter()
-                                .position(|ws| ws.root == page_widget)
-                            {
-                                let ws = state.workspaces.remove(idx);
-                                let id = ws.config.borrow().id.clone();
-                                state.config.workspace_ids.retain(|i| i != &id);
-                                session::delete_workspace_config(&id);
-                                session::delete_chat_history(&id);
-                            }
-                            drop(state);
-                            notebook.remove_page(Some(page_num as u32));
+            dialog.choose(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if result == Ok(1) {
+                    // User confirmed close
+                    if let Some(page_num) = notebook.page_num(&page_widget) {
+                        // Find and remove workspace from state
+                        let mut state = app_state.borrow_mut();
+                        if let Some(idx) = state
+                            .workspaces
+                            .iter()
+                            .position(|ws| ws.root == page_widget)
+                        {
+                            let ws = state.workspaces.remove(idx);
+                            let id = ws.config.borrow().id.clone();
+                            state.config.workspace_ids.retain(|i| i != &id);
+                            session::delete_workspace_config(&id);
+                            session::delete_chat_history(&id);
                         }
+                        drop(state);
+                        notebook.remove_page(Some(page_num));
                     }
-                },
-            );
+                }
+            });
         }
     ));
 

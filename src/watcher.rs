@@ -1,5 +1,5 @@
-use gtk4 as gtk;
 use gtk::glib;
+use gtk4 as gtk;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -70,9 +70,7 @@ impl FileWatcher {
 
                             // Check whether the currently viewed file was affected
                             let current = current_file.borrow().clone();
-                            if !current.is_empty()
-                                && path.to_string_lossy() == current.as_str()
-                            {
+                            if !current.is_empty() && path.to_string_lossy() == current.as_str() {
                                 if path.exists() {
                                     current_modified = true;
                                 } else {

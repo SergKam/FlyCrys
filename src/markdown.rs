@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, CodeBlockKind};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 /// Convert markdown text to Pango markup for GTK labels.
 pub fn md_to_pango(md: &str, is_dark: bool) -> String {
