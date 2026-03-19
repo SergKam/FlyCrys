@@ -239,7 +239,7 @@ impl AgentProcess {
         sender: mpsc::Sender<AgentEvent>,
         working_dir: &std::path::Path,
         config: &AgentSpawnConfig,
-    ) -> bool {
+    ) -> Result<(), String> {
         let cwd = working_dir.to_path_buf();
 
         // Use a PTY for stdout so Node.js treats it as a TTY and flushes immediately
@@ -260,7 +260,7 @@ impl AgentProcess {
             .arg("--dangerously-skip-permissions")
             .current_dir(&cwd)
             .stdin(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
 
         // Agent profile options
         if let Some(ref prompt) = config.system_prompt {
@@ -288,6 +288,12 @@ impl AgentProcess {
             Ok(mut child) => {
                 self.pid = Some(child.id());
                 self.stdin = child.stdin.take();
+
+                // Capture stderr for error reporting
+                if let Some(stderr) = child.stderr.take() {
+                    spawn_stderr_reader(stderr, sender.clone());
+                }
+
                 self.child = Some(child);
                 self.state = ProcessState::Running;
 
@@ -297,9 +303,9 @@ impl AgentProcess {
                     let stdout = self.child.as_mut().unwrap().stdout.take().unwrap();
                     spawn_reader(stdout, sender);
                 }
-                true
+                Ok(())
             }
-            Err(_) => false,
+            Err(e) => Err(format!("{e}")),
         }
     }
 

@@ -52,6 +52,7 @@ pub fn create_file_tree(
         let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         hbox.set_margin_start(4);
         let icon = gtk::Image::new();
+        icon.set_pixel_size(16);
         let label = gtk::Label::new(None);
         label.set_xalign(0.0);
         hbox.append(&icon);
