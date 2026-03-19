@@ -11,7 +11,7 @@ use crate::agent_process::{AgentEvent, AgentProcess, AgentSpawnConfig, ImageAtta
 use crate::agent_widgets;
 use crate::session::{AgentConfig, ChatMessage};
 
-const CONTEXT_WINDOW_MAX: u64 = 200_000;
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
 struct ToolInfo {
     content_box: gtk::Box,
@@ -42,6 +42,7 @@ struct PanelState {
     on_profile_change: Rc<dyn Fn(&str)>,
     // Token & cost tracking
     context_tokens: u64,
+    context_window_max: u64,
     total_cost_usd: f64,
     token_label: gtk::Label,
     cost_label: gtk::Label,
@@ -263,6 +264,7 @@ pub fn create_agent_panel(
         on_session_id_change,
         on_profile_change,
         context_tokens: 0,
+        context_window_max: DEFAULT_CONTEXT_WINDOW,
         total_cost_usd: 0.0,
         token_label: token_label.clone(),
         cost_label: cost_label.clone(),
@@ -745,12 +747,18 @@ fn handle_event(
     event: AgentEvent,
 ) {
     match event {
-        AgentEvent::System { session_id, .. } => {
+        AgentEvent::System { session_id, model, .. } => {
+            let mut s = state.borrow_mut();
             // Capture session_id for continuation
             if let Some(ref id) = session_id {
-                let mut s = state.borrow_mut();
                 s.session_id = Some(id.clone());
                 (s.on_session_id_change)(Some(id.clone()));
+            }
+            // Parse context window from model name (e.g., "claude-opus-4-6[1m]")
+            if let Some(ref model_name) = model {
+                if let Some(ctx) = parse_context_window(model_name) {
+                    s.context_window_max = ctx;
+                }
             }
         }
 
@@ -805,6 +813,7 @@ fn handle_event(
         AgentEvent::Result {
             total_cost_usd,
             is_error,
+            model_usage,
             ..
         } => {
             let msg = if is_error {
@@ -828,6 +837,22 @@ fn handle_event(
             // Update cost display
             s.total_cost_usd = total_cost_usd;
             s.cost_label.set_text(&format!("${:.2}", total_cost_usd));
+
+            // Extract context window size from modelUsage (most accurate source)
+            if let Some(ref mu) = model_usage {
+                if let Some(obj) = mu.as_object() {
+                    for (_model_name, info) in obj {
+                        if let Some(ctx) = info.get("contextWindow").and_then(|v| v.as_u64()) {
+                            if ctx > 0 {
+                                s.context_window_max = ctx;
+                                // Recalculate percentage with correct window
+                                let pct = (s.context_tokens as f64 / ctx as f64 * 100.0) as u32;
+                                s.token_label.set_text(&format!("{} ({}%)", format_token_count(s.context_tokens), pct));
+                            }
+                        }
+                    }
+                }
+            }
 
             // Stop any tool spinners that never received a result
             let orphaned: Vec<ToolInfo> = s.pending_tools.drain().map(|(_, v)| v).collect();
@@ -876,28 +901,32 @@ fn handle_stream_event(
 ) {
     match ev.event_type.as_str() {
         "message_start" => {
-            // Extract token usage from message.usage.input_tokens
+            // Extract total context usage from message.usage
+            // Real context = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
             if let Some(ref msg) = ev.message {
                 if let Some(usage) = msg.get("usage") {
-                    if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        let mut s = state.borrow_mut();
-                        s.context_tokens = input_tokens;
-                        let pct = (input_tokens as f64 / CONTEXT_WINDOW_MAX as f64 * 100.0) as u32;
-                        s.token_label.set_text(&format!("{} ({}%)", format_token_count(input_tokens), pct));
-                    }
+                    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let total_input = input + cache_create + cache_read;
+                    let mut s = state.borrow_mut();
+                    s.context_tokens = total_input;
+                    let pct = (total_input as f64 / s.context_window_max as f64 * 100.0) as u32;
+                    s.token_label.set_text(&format!("{} ({}%)", format_token_count(total_input), pct));
                 }
             }
         }
 
         "message_delta" => {
-            // Update token display with output_tokens added
+            // Update token display: total context = all input types + output tokens
             if let Some(ref usage) = ev.usage {
-                if usage.output_tokens > 0 {
-                    let s = state.borrow();
-                    let total = s.context_tokens + usage.output_tokens;
-                    let pct = (total as f64 / CONTEXT_WINDOW_MAX as f64 * 100.0) as u32;
-                    s.token_label.set_text(&format!("{} ({}%)", format_token_count(total), pct));
-                }
+                let total_input = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens;
+                let total = total_input + usage.output_tokens;
+                let s = state.borrow();
+                // Update stored context_tokens if we got better data
+                // (can't mutate here easily, but message_start already set it)
+                let pct = (total as f64 / s.context_window_max as f64 * 100.0) as u32;
+                s.token_label.set_text(&format!("{} ({}%)", format_token_count(total), pct));
             }
         }
 
@@ -999,6 +1028,20 @@ fn handle_stream_event(
         }
 
         _ => {}
+    }
+}
+
+/// Parse context window size from model name (e.g., "claude-opus-4-6[1m]" → 1_000_000)
+fn parse_context_window(model: &str) -> Option<u64> {
+    let start = model.find('[')?;
+    let end = model.find(']')?;
+    let spec = model[start + 1..end].to_lowercase();
+    if let Some(num_str) = spec.strip_suffix('m') {
+        num_str.parse::<u64>().ok().map(|n| n * 1_000_000)
+    } else if let Some(num_str) = spec.strip_suffix('k') {
+        num_str.parse::<u64>().ok().map(|n| n * 1_000)
+    } else {
+        None
     }
 }
 

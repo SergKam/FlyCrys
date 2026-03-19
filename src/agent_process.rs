@@ -12,6 +12,7 @@ pub enum AgentEvent {
     System {
         subtype: Option<String>,
         session_id: Option<String>,
+        model: Option<String>,
     },
     #[serde(rename = "stream_event")]
     StreamEvent {
@@ -36,6 +37,8 @@ pub enum AgentEvent {
         num_turns: u32,
         #[serde(default)]
         is_error: bool,
+        #[serde(rename = "modelUsage")]
+        model_usage: Option<serde_json::Value>,
     },
     #[serde(other)]
     Unknown,

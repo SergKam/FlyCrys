@@ -213,16 +213,26 @@ fn build_ui(app: &gtk::Application) {
                     .map(|s| s.trim().to_string())
                     .unwrap_or_else(|| "not found".to_string());
 
-                let about = gtk::AboutDialog::builder()
+                // Load the app logo from the icons directory
+                let logo = load_about_logo();
+
+                let mut builder = gtk::AboutDialog::builder()
                     .program_name("FlyCrys")
                     .version(env!("CARGO_PKG_VERSION"))
                     .comments(format!(
-                        "GTK4 workspace with AI agent integration\n\nClaude CLI: {}",
+                        "Fast like a fly, solid like a crystal\n\
+                         GTK4 workspace with AI agent integration\n\n\
+                         Claude CLI: {}",
                         claude_version
                     ))
                     .license_type(gtk::License::MitX11)
-                    .modal(true)
-                    .build();
+                    .modal(true);
+
+                if let Some(ref texture) = logo {
+                    builder = builder.logo(texture);
+                }
+
+                let about = builder.build();
 
                 if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
                     about.set_transient_for(Some(&window));
@@ -483,4 +493,26 @@ fn create_tab_label(
     ));
 
     hbox
+}
+
+/// Load the app logo for the About dialog from the icons directory.
+fn load_about_logo() -> Option<gtk::gdk::Texture> {
+    let exe_dir = std::env::current_exe().ok()?;
+    let base = exe_dir.parent()?;
+    // Try locations relative to the binary and the source tree
+    let candidates = [
+        base.join("icons/hicolor/256x256/apps/com.flycrys.app.png"),
+        base.join("../icons/hicolor/256x256/apps/com.flycrys.app.png"),
+        std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/icons/hicolor/256x256/apps/com.flycrys.app.png"
+        )),
+    ];
+    for path in &candidates {
+        if path.is_file() {
+            let file = gtk::gio::File::for_path(path);
+            return gtk::gdk::Texture::from_file(&file).ok();
+        }
+    }
+    None
 }
