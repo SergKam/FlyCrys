@@ -9,7 +9,7 @@ fn agent_event_system() {
     let json = r#"{"type":"system","subtype":"init","session_id":"sess-123"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::System { subtype, session_id } => {
+        AgentEvent::System { subtype, session_id, .. } => {
             assert_eq!(subtype.as_deref(), Some("init"));
             assert_eq!(session_id.as_deref(), Some("sess-123"));
         }
@@ -127,7 +127,7 @@ fn agent_event_result() {
     }"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::Result { result, total_cost_usd, num_turns, is_error } => {
+        AgentEvent::Result { result, total_cost_usd, num_turns, is_error, .. } => {
             assert_eq!(result.as_deref(), Some("Task completed successfully"));
             assert!((total_cost_usd - 0.0342).abs() < 0.0001);
             assert_eq!(num_turns, 5);
@@ -165,7 +165,7 @@ fn agent_event_result_missing_optional_fields() {
     let json = r#"{"type":"result"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::Result { result, total_cost_usd, num_turns, is_error } => {
+        AgentEvent::Result { result, total_cost_usd, num_turns, is_error, .. } => {
             assert!(result.is_none());
             assert_eq!(total_cost_usd, 0.0);
             assert_eq!(num_turns, 0);
@@ -180,7 +180,7 @@ fn agent_event_system_minimal() {
     let json = r#"{"type":"system"}"#;
     let event: AgentEvent = serde_json::from_str(json).unwrap();
     match event {
-        AgentEvent::System { subtype, session_id } => {
+        AgentEvent::System { subtype, session_id, .. } => {
             assert!(subtype.is_none());
             assert!(session_id.is_none());
         }

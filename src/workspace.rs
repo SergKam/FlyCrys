@@ -38,7 +38,7 @@ impl Workspace {
         let (tree_scroll, list_view, selection, dir_stores) = tree::create_file_tree(&working_dir);
 
         // Right pane top: text view
-        let (text_container, text_view, path_label) = textview::create_text_view();
+        let (text_container, text_view, gutter, path_label) = textview::create_text_view();
 
         // Right pane bottom: terminal (initially hidden)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
@@ -72,6 +72,7 @@ impl Workspace {
         left_click.connect_pressed(glib::clone!(
             #[weak] list_view,
             #[weak] text_view,
+            #[weak] gutter,
             #[weak] path_label,
             #[strong] current_file,
             #[strong] is_dark,
@@ -89,8 +90,6 @@ impl Workspace {
                         if let Some(row) = expander.list_row() {
                             if let Some(entry) = row.item().and_downcast::<FileEntry>() {
                                 if entry.is_dir() {
-                                    // Only toggle if click was on the content area (name/icon),
-                                    // not the arrow — TreeExpander handles arrow clicks itself.
                                     let on_content = expander.child().is_some_and(|child| {
                                         let child_w: gtk::Widget = child.upcast();
                                         let mut check = Some(picked.clone());
@@ -108,7 +107,7 @@ impl Workspace {
                                 } else {
                                     let path = entry.path();
                                     let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                                    textview::load_file(&text_view, &path_label, &path, theme);
+                                    textview::load_file(&text_view, &gutter, &path_label, &path, theme);
                                     *current_file.borrow_mut() = path.clone();
                                     config.borrow_mut().open_file = Some(path);
                                 }
@@ -171,6 +170,7 @@ impl Workspace {
         // Agent panel callbacks
         let on_open_file: Rc<dyn Fn(&str)> = {
             let text_view = text_view.clone();
+            let gutter = gutter.clone();
             let path_label = path_label.clone();
             let selection = selection.clone();
             let current_file = Rc::clone(&current_file);
@@ -178,7 +178,7 @@ impl Workspace {
             let config = Rc::clone(&config);
             Rc::new(move |file_path: &str| {
                 let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                textview::load_file(&text_view, &path_label, file_path, theme);
+                textview::load_file(&text_view, &gutter, &path_label, file_path, theme);
                 *current_file.borrow_mut() = file_path.to_string();
                 config.borrow_mut().open_file = Some(file_path.to_string());
                 select_file_in_tree(&selection, file_path);
@@ -304,6 +304,74 @@ impl Workspace {
         }
         action_group.add_action(&action_add_chat);
 
+        // --- Gutter right-click: Copy Line Link / Add Line Link to Chat ---
+        let gutter_ctx_line: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+
+        let gutter_menu = gio::Menu::new();
+        gutter_menu.append(Some("Copy Line Link"), Some("ws.copy-line-link"));
+        gutter_menu.append(Some("Add Line Link to Chat"), Some("ws.add-line-link-to-chat"));
+
+        let gutter_popover = gtk::PopoverMenu::from_model(Some(&gutter_menu));
+        gutter_popover.set_parent(&gutter);
+        gutter_popover.set_has_arrow(false);
+
+        let gutter_click = gtk::GestureClick::new();
+        gutter_click.set_button(3);
+        gutter_click.connect_pressed(glib::clone!(
+            #[weak] gutter,
+            #[weak] gutter_popover,
+            #[strong] gutter_ctx_line,
+            move |gesture, _n_press, x, y| {
+                // Claim the sequence so the default TextView context menu is suppressed
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let (bx, by) = gutter.window_to_buffer_coords(
+                    gtk::TextWindowType::Widget,
+                    x as i32,
+                    y as i32,
+                );
+                if let Some(iter) = gutter.iter_at_location(bx, by) {
+                    gutter_ctx_line.set(iter.line() as u32 + 1);
+                    gutter_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                        x as i32, y as i32, 1, 1,
+                    )));
+                    gutter_popover.popup();
+                }
+            }
+        ));
+        gutter.add_controller(gutter_click);
+
+        // Copy Line Link
+        let action_copy_line = gio::SimpleAction::new("copy-line-link", None);
+        {
+            let current_file = Rc::clone(&current_file);
+            let gutter_ctx_line = Rc::clone(&gutter_ctx_line);
+            let root = root.clone();
+            action_copy_line.connect_activate(move |_, _| {
+                let file = current_file.borrow().clone();
+                let line = gutter_ctx_line.get();
+                if !file.is_empty() && line > 0 {
+                    root.clipboard().set_text(&format!("{}:{}", file, line));
+                }
+            });
+        }
+        action_group.add_action(&action_copy_line);
+
+        // Add Line Link to Chat
+        let action_add_line = gio::SimpleAction::new("add-line-link-to-chat", None);
+        {
+            let current_file = Rc::clone(&current_file);
+            let gutter_ctx_line = Rc::clone(&gutter_ctx_line);
+            let agent_input = agent_input_1.clone();
+            action_add_line.connect_activate(move |_, _| {
+                let file = current_file.borrow().clone();
+                let line = gutter_ctx_line.get();
+                if !file.is_empty() && line > 0 {
+                    append_path_to_input(&agent_input, &format!("{}:{}", file, line));
+                }
+            });
+        }
+        action_group.add_action(&action_add_line);
+
         root.insert_action_group("ws", Some(&action_group));
 
         // --- Drag from file tree → drop on agent input ---
@@ -397,7 +465,7 @@ impl Workspace {
             let open_file = config.borrow().open_file.clone();
             if let Some(ref path) = open_file {
                 let theme = if is_dark.get() { highlight::DARK_THEME } else { highlight::LIGHT_THEME };
-                textview::load_file(&text_view, &path_label, path, theme);
+                textview::load_file(&text_view, &gutter, &path_label, path, theme);
                 *current_file.borrow_mut() = path.clone();
                 select_file_in_tree(&selection, path);
             }
@@ -407,6 +475,7 @@ impl Workspace {
         let file_watcher = {
             let on_file_changed: Rc<dyn Fn()> = {
                 let text_view = text_view.clone();
+                let gutter = gutter.clone();
                 let path_label = path_label.clone();
                 let current_file = Rc::clone(&current_file);
                 let is_dark = Rc::clone(&is_dark);
@@ -418,19 +487,20 @@ impl Workspace {
                         } else {
                             highlight::LIGHT_THEME
                         };
-                        textview::load_file(&text_view, &path_label, &file, theme);
+                        textview::load_file(&text_view, &gutter, &path_label, &file, theme);
                     }
                 })
             };
 
             let on_file_removed: Rc<dyn Fn()> = {
                 let text_view = text_view.clone();
+                let gutter = gutter.clone();
                 let path_label = path_label.clone();
                 let current_file = Rc::clone(&current_file);
                 let selection = selection.clone();
                 let config = Rc::clone(&config);
                 Rc::new(move || {
-                    textview::clear_view(&text_view, &path_label);
+                    textview::clear_view(&text_view, &gutter, &path_label);
                     *current_file.borrow_mut() = String::new();
                     config.borrow_mut().open_file = None;
                     selection.set_selected(gtk::INVALID_LIST_POSITION);
@@ -449,6 +519,7 @@ impl Workspace {
         // Re-highlight callback for theme changes
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
             let text_view = text_view.clone();
+            let gutter = gutter.clone();
             let path_label = path_label.clone();
             let current_file = Rc::clone(&current_file);
             Rc::new(move |dark: bool| {
@@ -459,7 +530,7 @@ impl Workspace {
                     } else {
                         highlight::LIGHT_THEME
                     };
-                    textview::load_file(&text_view, &path_label, &file, theme);
+                    textview::load_file(&text_view, &gutter, &path_label, &file, theme);
                 }
             })
         };
