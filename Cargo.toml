@@ -1,6 +1,6 @@
 [package]
 name = "flycrys"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Lightning-fast, Linux-native agentic UI on top of Claude Code CLI"
 license = "MIT"
