@@ -65,7 +65,12 @@ fn dark_css() -> &'static str {
 }
 
 fn main() -> glib::ExitCode {
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    // No application ID → each process is independent (no D-Bus single-instance).
+    // This lets multiple windows coexist and `cargo run` always starts the new build.
+    let app = gtk::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
 
     app.connect_startup(|_app| {
         let icon_theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().unwrap());
@@ -206,7 +211,6 @@ fn build_ui(app: &gtk::Application) {
     {
         settings.set_gtk_application_prefer_dark_theme(true);
     }
-
     // Notebook for tabs
     let notebook = gtk::Notebook::new();
     notebook.set_scrollable(true);
