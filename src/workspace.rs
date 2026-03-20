@@ -208,8 +208,6 @@ impl Workspace {
         // Load agent profiles
         let agent_configs = session::list_agent_configs();
 
-        // Tab spinner: shown in notebook tab when agent is working (created by caller)
-
         // Chat history
         let chat_history = Rc::new(RefCell::new(session::load_chat_history(
             &config.borrow().id,
@@ -501,7 +499,6 @@ impl Workspace {
                 select_file_in_tree(&selection, path);
             }
         }
-
         // File-system watcher: auto-refresh tree and current file on changes
         let file_watcher = {
             let on_file_changed: Rc<dyn Fn()> = {

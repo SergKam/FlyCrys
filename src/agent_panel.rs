@@ -273,9 +273,13 @@ pub fn create_agent_panel(
         cost_label: cost_label.clone(),
     }));
 
-    // Render restored chat history after the UI is shown (deferred to first idle
-    // tick so the window paints immediately instead of blocking on widget creation).
+    // Render restored chat history in two phases:
+    // 1. Immediately render the last TAIL_COUNT messages (visible on screen)
+    // 2. Prepend older messages in batches via idle callbacks with a spinner
     {
+        const TAIL_COUNT: usize = 20;
+        const BATCH_SIZE: usize = 20;
+
         let state = Rc::clone(&state);
         let message_list = message_list.clone();
         let scrolled = scrolled.clone();
@@ -284,59 +288,65 @@ pub fn create_agent_panel(
             let history = s.chat_history.borrow();
             let on_open = s.on_open_file.clone();
             let dark = s.is_dark.get();
-            for msg in history.iter() {
-                match msg {
-                    ChatMessage::User { text } => {
-                        message_list.append(&agent_widgets::create_user_message(text));
-                    }
-                    ChatMessage::AssistantText { text } => {
-                        let (container, label) = agent_widgets::create_assistant_text();
-                        let cb = on_open.clone();
-                        label.connect_activate_link(move |_label, uri| {
-                            if let Some(path) = uri.strip_prefix("file://") {
-                                cb(path);
-                                glib::Propagation::Stop
-                            } else {
-                                glib::Propagation::Proceed
-                            }
-                        });
-                        agent_widgets::update_assistant_text(&label, text, dark);
-                        message_list.append(&container);
-                    }
-                    ChatMessage::ToolCall {
-                        tool_name,
-                        tool_input,
-                        output,
-                        is_error,
-                    } => {
-                        let input_text = extract_tool_display(tool_name, tool_input);
-                        let file_path = extract_file_path(tool_input);
-                        let (container, content_box, spinner, expander) =
-                            agent_widgets::create_tool_call(
-                                tool_name,
-                                &input_text,
-                                file_path.as_deref(),
-                                on_open.clone(),
-                            );
-                        agent_widgets::fill_tool_result(
-                            &content_box,
-                            &spinner,
-                            &expander,
-                            output,
-                            *is_error,
-                            tool_name,
-                            tool_input,
-                        );
-                        message_list.append(&container);
-                    }
-                    ChatMessage::System { text } => {
-                        message_list.append(&agent_widgets::create_system_message(text));
-                    }
-                }
+            let total = history.len();
+            let tail_start = total.saturating_sub(TAIL_COUNT);
+
+            // Phase 1: render the tail (last N messages) immediately
+            for msg in &history[tail_start..] {
+                render_chat_message(msg, &message_list, &on_open, dark);
             }
             drop(history);
             drop(s);
             scroll_to_bottom(&scrolled);
+
+            // Phase 2: prepend older messages in batches if any exist
+            if tail_start > 0 {
+                // Loading spinner at the very top
+                let loading = agent_widgets::create_thinking_spinner();
+                message_list.prepend(&loading);
+
+                // Snapshot the older slice for batch processing
+                let state2 = Rc::clone(&state);
+                let older: Vec<ChatMessage> =
+                    state2.borrow().chat_history.borrow()[..tail_start].to_vec();
+                // Cursor walks backwards from the end of the older slice
+                let cursor = Rc::new(Cell::new(older.len()));
+
+                let message_list2 = message_list.clone();
+                let scrolled2 = scrolled.clone();
+                glib::idle_add_local(move || {
+                    let s = state2.borrow();
+                    let on_open = s.on_open_file.clone();
+                    let dark = s.is_dark.get();
+                    drop(s);
+
+                    let cur = cursor.get();
+                    if cur == 0 {
+                        // Done — remove the loading spinner
+                        message_list2.remove(&loading);
+                        return glib::ControlFlow::Break;
+                    }
+
+                    let batch_start = cur.saturating_sub(BATCH_SIZE);
+                    // Insert each message after the previous one so the batch
+                    // appears in chronological order below the spinner.
+                    let mut insert_after: Option<gtk::Widget> =
+                        Some(loading.clone().upcast());
+                    for msg in &older[batch_start..cur] {
+                        let widget =
+                            render_chat_message_widget(msg, &on_open, dark);
+                        message_list2
+                            .insert_child_after(&widget, insert_after.as_ref());
+                        insert_after = Some(widget);
+                    }
+                    cursor.set(batch_start);
+
+                    // Keep scroll pinned to the bottom while prepending
+                    scroll_to_bottom(&scrolled2);
+
+                    glib::ControlFlow::Continue
+                });
+            }
         });
     }
 
@@ -1162,4 +1172,66 @@ fn extract_file_path(json_str: &str) -> Option<String> {
 fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
     let adj = scrolled.vadjustment();
     adj.set_value(adj.upper() - adj.page_size());
+}
+
+/// Render a single chat message, returning the widget (for prepend/insert).
+fn render_chat_message_widget(
+    msg: &ChatMessage,
+    on_open: &Rc<dyn Fn(&str)>,
+    dark: bool,
+) -> gtk::Widget {
+    match msg {
+        ChatMessage::User { text } => agent_widgets::create_user_message(text).upcast(),
+        ChatMessage::AssistantText { text } => {
+            let (container, label) = agent_widgets::create_assistant_text();
+            let cb = on_open.clone();
+            label.connect_activate_link(move |_label, uri| {
+                if let Some(path) = uri.strip_prefix("file://") {
+                    cb(path);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+            agent_widgets::update_assistant_text(&label, text, dark);
+            container.upcast()
+        }
+        ChatMessage::ToolCall {
+            tool_name,
+            tool_input,
+            output,
+            is_error,
+        } => {
+            let input_text = extract_tool_display(tool_name, tool_input);
+            let file_path = extract_file_path(tool_input);
+            let (container, content_box, spinner, expander) = agent_widgets::create_tool_call(
+                tool_name,
+                &input_text,
+                file_path.as_deref(),
+                on_open.clone(),
+            );
+            agent_widgets::fill_tool_result(
+                &content_box,
+                &spinner,
+                &expander,
+                output,
+                *is_error,
+                tool_name,
+                tool_input,
+            );
+            container.upcast()
+        }
+        ChatMessage::System { text } => agent_widgets::create_system_message(text).upcast(),
+    }
+}
+
+/// Render a chat message and append it to the message list.
+fn render_chat_message(
+    msg: &ChatMessage,
+    message_list: &gtk::Box,
+    on_open: &Rc<dyn Fn(&str)>,
+    dark: bool,
+) {
+    let widget = render_chat_message_widget(msg, on_open, dark);
+    message_list.append(&widget);
 }

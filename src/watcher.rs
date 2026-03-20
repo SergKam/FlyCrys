@@ -11,21 +11,18 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::tree::{self, DirStoreMap};
 
-/// Watches a directory tree for changes and refreshes the file-tree stores
-/// and the currently open file view.
+/// Watches only the directories currently visible in the file tree (expanded
+/// dirs tracked by `dir_stores`) plus the parent of the open file.
+///
+/// On each 200ms tick the watcher syncs its watch set with `dir_stores` keys,
+/// adding/removing individual non-recursive watches as directories are
+/// expanded or collapsed. This typically means 5–10 inotify watches instead of
+/// tens of thousands for a project with node_modules/.
 pub struct FileWatcher {
-    // Dropping this stops the OS-level watcher and closes the sender,
-    // which makes the GTK timer exit on the next tick.
-    _watcher: RecommendedWatcher,
+    _watcher: Rc<RefCell<Option<RecommendedWatcher>>>,
 }
 
 impl FileWatcher {
-    /// Start watching `root` recursively.
-    ///
-    /// * `dir_stores` – shared map of expanded-directory → ListStore
-    /// * `current_file` – path of the file currently shown in the text view
-    /// * `on_file_changed` – called when the current file is modified on disk
-    /// * `on_file_removed` – called when the current file is deleted
     pub fn new(
         root: &Path,
         dir_stores: DirStoreMap,
@@ -45,11 +42,45 @@ impl FileWatcher {
         )
         .ok()?;
 
-        watcher.watch(root, RecursiveMode::Recursive).ok()?;
+        // Watch the root directory (always visible as the tree root)
+        let _ = watcher.watch(root, RecursiveMode::NonRecursive);
 
-        // Single timer that drains the channel and applies changes.
-        // Runs every 200 ms, providing natural debouncing for burst operations.
+        let watcher = Rc::new(RefCell::new(Some(watcher)));
+        let watched_dirs: Rc<RefCell<HashSet<PathBuf>>> = Rc::new(RefCell::new(HashSet::new()));
+        watched_dirs.borrow_mut().insert(root.to_path_buf());
+
+        // Single timer: sync watched dirs with dir_stores, then drain events.
+        let watcher_for_timer = Rc::clone(&watcher);
         glib::timeout_add_local(Duration::from_millis(200), move || {
+            // --- Sync watches with visible directories ---
+            if let Some(ref mut w) = *watcher_for_timer.borrow_mut() {
+                let mut desired: HashSet<PathBuf> =
+                    dir_stores.borrow().keys().cloned().collect();
+
+                // Also watch the parent dir of the currently open file
+                let current = current_file.borrow().clone();
+                if !current.is_empty()
+                    && let Some(parent) = Path::new(&current).parent()
+                {
+                    desired.insert(parent.to_path_buf());
+                }
+
+                let mut watched = watched_dirs.borrow_mut();
+
+                // Add watches for newly expanded dirs
+                for dir in desired.difference(&watched).cloned().collect::<Vec<_>>() {
+                    let _ = w.watch(&dir, RecursiveMode::NonRecursive);
+                    watched.insert(dir);
+                }
+
+                // Remove watches for collapsed/gone dirs
+                for dir in watched.difference(&desired).cloned().collect::<Vec<_>>() {
+                    let _ = w.unwatch(&dir);
+                    watched.remove(&dir);
+                }
+            }
+
+            // --- Drain and process events ---
             let mut changed_dirs: HashSet<PathBuf> = HashSet::new();
             let mut current_modified = false;
             let mut current_removed = false;
@@ -58,17 +89,13 @@ impl FileWatcher {
                 match rx.try_recv() {
                     Ok(event) => {
                         for path in &event.paths {
-                            // Mark the parent directory as needing a refresh
                             if let Some(parent) = path.parent() {
                                 changed_dirs.insert(parent.to_path_buf());
                             }
-                            // Also mark the path itself if it's a directory
-                            // (handles cases like directory creation/removal)
                             if path.is_dir() {
                                 changed_dirs.insert(path.clone());
                             }
 
-                            // Check whether the currently viewed file was affected
                             let current = current_file.borrow().clone();
                             if !current.is_empty() && path.to_string_lossy() == current.as_str() {
                                 if path.exists() {
@@ -81,23 +108,18 @@ impl FileWatcher {
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        // Watcher was dropped — stop the timer
                         return glib::ControlFlow::Break;
                     }
                 }
             }
 
-            // Refresh affected directory stores
             for dir in &changed_dirs {
-                // Clone the store Rc out of the borrow so we don't hold the
-                // RefCell while refresh_directory also borrows dir_stores.
                 let store = dir_stores.borrow().get(dir).cloned();
                 if let Some(store) = store {
                     tree::refresh_directory(&store, dir, &dir_stores);
                 }
             }
 
-            // Handle current-file changes
             if current_removed {
                 on_file_removed();
             } else if current_modified {
