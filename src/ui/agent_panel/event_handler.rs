@@ -1,7 +1,7 @@
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4 as gtk;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::agent_widgets;
@@ -117,16 +117,16 @@ pub(crate) fn handle_domain_event(
             let input_text = super::extract_tool_display(&name, &input_json);
             let file_path = super::extract_file_path(&input_json);
             let on_open = s.on_open_file.clone();
-            let (container, content_box, spinner, expander) =
+            let (container, header_label, content_box, spinner) =
                 agent_widgets::create_tool_call(&name, &input_text, file_path.as_deref(), on_open);
             message_list.append(&container);
 
             s.chat.pending_tools.insert(
                 id,
                 ToolInfo {
+                    header_label,
                     content_box,
                     spinner,
-                    expander,
                     tool_name: name,
                     tool_input: input_json,
                 },
@@ -145,15 +145,28 @@ pub(crate) fn handle_domain_event(
         } => {
             let mut s = state.borrow_mut();
             if let Some(info) = s.chat.pending_tools.remove(&id) {
-                agent_widgets::fill_tool_result(
-                    &info.content_box,
-                    &info.spinner,
-                    &info.expander,
-                    &output,
-                    is_error,
-                    &info.tool_name,
-                    &info.tool_input,
-                );
+                // Mark complete (show triangle, stop spinner) — output rendered lazily on click
+                agent_widgets::mark_tool_complete(&info.spinner, &info.header_label, is_error);
+
+                // Wire lazy rendering: on first expand, render the output
+                let output_clone = output.clone();
+                let tool_name = info.tool_name.clone();
+                let tool_input = info.tool_input.clone();
+                let content_box = info.content_box.clone();
+                let rendered = Rc::new(Cell::new(false));
+                content_box.connect_map(move |cb| {
+                    if !rendered.get() {
+                        rendered.set(true);
+                        agent_widgets::render_tool_output(
+                            cb,
+                            &output_clone,
+                            is_error,
+                            &tool_name,
+                            &tool_input,
+                        );
+                    }
+                });
+
                 s.chat
                     .chat_history
                     .borrow_mut()

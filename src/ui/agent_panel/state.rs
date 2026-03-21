@@ -10,9 +10,9 @@ use crate::services::cli::claude::ClaudeBackend;
 
 /// Metadata for a pending tool call (awaiting result).
 pub(crate) struct ToolInfo {
+    pub header_label: gtk::Label,
     pub content_box: gtk::Box,
     pub spinner: gtk::Spinner,
-    pub expander: gtk::Expander,
     pub tool_name: String,
     pub tool_input: String,
 }

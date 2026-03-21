@@ -65,28 +65,34 @@ pub fn update_assistant_text(label: &gtk::Label, raw_md: &str, is_dark: bool) {
     }
 }
 
-/// Tool call panel: header with spinner + tool info, expandable output area.
-/// Returns (container, content_box, spinner, expander).
+/// Tool call panel: clickable header with triangle + spinner + tool info.
+/// Output area is hidden and rendered lazily when the user clicks.
+/// Returns (container, header_label, content_box, spinner).
 pub fn create_tool_call(
     tool_name: &str,
     tool_input_hint: &str,
     file_path: Option<&str>,
     on_open_file: Rc<dyn Fn(&str)>,
-) -> (gtk::Box, gtk::Box, gtk::Spinner, gtk::Expander) {
-    let container = gtk::Box::new(gtk::Orientation::Vertical, 2);
+) -> (gtk::Box, gtk::Label, gtk::Box, gtk::Spinner) {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
     container.set_margin_start(8);
     container.set_margin_end(8);
     container.set_margin_top(4);
     container.set_margin_bottom(4);
     container.add_css_class("tool-call");
 
-    // Header row: spinner + tool name(args)
+    // Header row: spinner + triangle + tool name(args) [+ file link]
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
 
     let spinner = gtk::Spinner::new();
     spinner.set_spinning(true);
     spinner.set_size_request(16, 16);
     header.append(&spinner);
+
+    // Triangle indicator — ▶ collapsed, ▼ expanded (updated by fill/toggle)
+    let triangle_label = gtk::Label::new(Some("\u{25B6}"));
+    triangle_label.set_visible(false); // hidden until result arrives
+    header.append(&triangle_label);
 
     if let Some(path) = file_path {
         let name_label = gtk::Label::new(Some(&format!("{tool_name}(")));
@@ -132,17 +138,29 @@ pub fn create_tool_call(
 
     container.append(&header);
 
-    // Expandable output area (hidden until result arrives)
-    let expander = gtk::Expander::new(Some("Output"));
-    expander.set_expanded(false);
-    expander.set_visible(false);
-    expander.set_margin_start(20);
-
+    // Output area — hidden, populated lazily on first click
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    expander.set_child(Some(&content_box));
-    container.append(&expander);
+    content_box.set_margin_start(20);
+    content_box.set_margin_top(2);
+    content_box.set_visible(false);
+    container.append(&content_box);
 
-    (container, content_box, spinner, expander)
+    // Make the header clickable to toggle output
+    let click = gtk::GestureClick::new();
+    let content_ref = content_box.clone();
+    let tri_ref = triangle_label.clone();
+    click.connect_released(move |_, _, _, _| {
+        if !tri_ref.is_visible() {
+            return; // no result yet
+        }
+        let expanded = content_ref.is_visible();
+        content_ref.set_visible(!expanded);
+        tri_ref.set_label(if expanded { "\u{25B6}" } else { "\u{25BC}" });
+    });
+    header.add_controller(click);
+    header.set_cursor_from_name(Some("pointer"));
+
+    (container, triangle_label, content_box, spinner)
 }
 
 fn escape_markup(s: &str) -> String {
@@ -152,20 +170,26 @@ fn escape_markup(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Fill tool result into the tool call's content box
-pub fn fill_tool_result(
+/// Mark tool as completed: stop spinner, show triangle indicator.
+/// Output is NOT rendered yet — it's stored and rendered lazily on first click.
+pub fn mark_tool_complete(spinner: &gtk::Spinner, header_label: &gtk::Label, is_error: bool) {
+    spinner.set_spinning(false);
+    spinner.set_visible(false);
+    header_label.set_visible(true); // show the ▶ triangle
+    if is_error {
+        header_label.set_label("\u{25B6}\u{26A0}"); // ▶⚠
+    }
+}
+
+/// Render tool output into the content box (called lazily on first expand).
+pub fn render_tool_output(
     content_box: &gtk::Box,
-    spinner: &gtk::Spinner,
-    expander: &gtk::Expander,
     output: &str,
     is_error: bool,
     tool_name: &str,
     tool_input: &str,
 ) {
-    spinner.set_spinning(false);
-    spinner.set_visible(false);
-
-    // No output — expander stays hidden (e.g. Read tool)
+    // No output — nothing to render
     if output.trim().is_empty() {
         return;
     }
@@ -182,7 +206,6 @@ pub fn fill_tool_result(
         label.set_selectable(true);
         label.add_css_class("monospace");
         content_box.append(&label);
-        expander.set_visible(true);
         return;
     }
 
@@ -214,7 +237,6 @@ pub fn fill_tool_result(
     }
 
     content_box.append(&label);
-    expander.set_visible(true);
 }
 
 /// Try to build a Pango diff markup from Edit tool input JSON
