@@ -3,6 +3,7 @@ pub mod agent_panel;
 pub mod agent_process;
 pub mod agent_widgets;
 pub mod file_entry;
+pub mod git_panel;
 pub mod highlight;
 pub mod markdown;
 pub mod session;

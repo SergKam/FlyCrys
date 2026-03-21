@@ -21,7 +21,13 @@ pub struct AppConfig {
     pub workspace_ids: Vec<String>,
     pub window_width: i32,
     pub window_height: i32,
+    #[serde(default = "default_true")]
+    pub window_maximized: bool,
     pub is_dark: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -29,8 +35,9 @@ impl Default for AppConfig {
         Self {
             active_tab: 0,
             workspace_ids: Vec::new(),
-            window_width: 1400,
+            window_width: 1200,
             window_height: 800,
+            window_maximized: true,
             is_dark: false,
         }
     }
@@ -50,6 +57,10 @@ pub struct WorkspaceConfig {
     pub agent_1_profile: String,
     #[serde(default)]
     pub agent_1_session_id: Option<String>,
+    #[serde(default)]
+    pub preview_mode: bool,
+    #[serde(default = "default_true")]
+    pub show_diff: bool,
 }
 
 fn default_profile() -> String {
@@ -68,6 +79,8 @@ impl WorkspaceConfig {
             terminal_visible: false,
             agent_1_profile: default_profile(),
             agent_1_session_id: None,
+            preview_mode: false,
+            show_diff: true,
         }
     }
 

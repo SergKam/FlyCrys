@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::file_entry::FileEntry;
 use crate::session::{self, WorkspaceConfig};
 use crate::watcher::FileWatcher;
-use crate::{agent_panel, highlight, terminal, textview, tree};
+use crate::{agent_panel, git_panel, highlight, terminal, textview, tree};
 
 /// All the widgets for a single workspace tab
 pub struct Workspace {
@@ -38,15 +38,176 @@ impl Workspace {
         // Left pane: file tree
         let (tree_scroll, list_view, selection, dir_stores) = tree::create_file_tree(&working_dir);
 
-        // Right pane top: text view
-        let (text_container, text_view, gutter, path_label) = textview::create_text_view();
+        // Right pane top: text view with toolbar
+        let tv = textview::create_text_view();
 
         // Right pane bottom: terminal (initially hidden)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
         terminal_container.set_visible(config.borrow().terminal_visible);
 
+        // --- Connect toggle handlers FIRST (before setting initial state) ---
+
+        // View toggle: switch between source and preview
+        {
+            let source_hbox = tv.source_hbox.clone();
+            let preview_scroll = tv.preview_scroll.clone();
+            let current_file = Rc::clone(&current_file);
+            let is_dark = Rc::clone(&is_dark);
+            let config = Rc::clone(&config);
+            tv.view_toggle.connect_toggled(move |toggle| {
+                config.borrow_mut().preview_mode = toggle.is_active();
+                if toggle.is_active() {
+                    source_hbox.set_visible(false);
+                    preview_scroll.set_visible(true);
+                    let file = current_file.borrow().clone();
+                    if !file.is_empty() {
+                        textview::load_preview(&preview_scroll, &file, is_dark.get());
+                    }
+                } else {
+                    source_hbox.set_visible(true);
+                    preview_scroll.set_visible(false);
+                }
+            });
+        }
+
+        // Diff toggle: switch between normal source and git diff
+        {
+            let text_view = tv.text_view.clone();
+            let gutter = tv.gutter.clone();
+            let path_label = tv.path_label.clone();
+            let view_toggle = tv.view_toggle.clone();
+            let open_btn = tv.open_btn.clone();
+            let edit_btn = tv.edit_btn.clone();
+            let browser_btn = tv.browser_btn.clone();
+            let terminal_btn = tv.terminal_btn.clone();
+            let copy_btn = tv.copy_btn.clone();
+            let chat_btn = tv.chat_btn.clone();
+            let current_file = Rc::clone(&current_file);
+            let is_dark = Rc::clone(&is_dark);
+            let config = Rc::clone(&config);
+            let working_dir = working_dir.clone();
+            tv.diff_toggle.connect_toggled(move |toggle| {
+                config.borrow_mut().show_diff = toggle.is_active();
+                let file = current_file.borrow().clone();
+                if file.is_empty() {
+                    return;
+                }
+                if toggle.is_active() {
+                    if let Some(diff) = git_panel::get_file_diff(&file, &working_dir) {
+                        let line_count = diff.lines().count().max(1);
+                        git_panel::load_diff_into_buffer(
+                            &text_view.buffer(),
+                            &diff,
+                            is_dark.get(),
+                        );
+                        textview::update_gutter(&gutter, line_count);
+                    }
+                } else {
+                    // Reload normal file
+                    let theme = if is_dark.get() {
+                        highlight::DARK_THEME
+                    } else {
+                        highlight::LIGHT_THEME
+                    };
+                    textview::load_file(
+                        &text_view,
+                        &gutter,
+                        &path_label,
+                        &file,
+                        theme,
+                        &view_toggle,
+                        &[
+                            &open_btn,
+                            &edit_btn,
+                            &browser_btn,
+                            &terminal_btn,
+                            &copy_btn,
+                            &chat_btn,
+                        ],
+                    );
+                }
+            });
+        }
+
+        // Set initial toggle states from config (triggers handlers, but current_file is empty)
+        {
+            let show_diff = config.borrow().show_diff;
+            tv.diff_toggle.set_active(show_diff);
+            let preview_mode = config.borrow().preview_mode;
+            if preview_mode {
+                tv.view_toggle.set_active(true);
+            }
+        }
+
+        // --- Toolbar button wiring ---
+
+        // Open button: xdg-open the file
+        {
+            let current_file = Rc::clone(&current_file);
+            tv.open_btn.connect_clicked(move |_| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    let _ = std::process::Command::new("xdg-open").arg(&file).spawn();
+                }
+            });
+        }
+
+        // Edit button: open in text editor
+        {
+            let current_file = Rc::clone(&current_file);
+            tv.edit_btn.connect_clicked(move |_| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    open_in_text_editor(&file);
+                }
+            });
+        }
+
+        // Browser button: open in web browser
+        {
+            let current_file = Rc::clone(&current_file);
+            tv.browser_btn.connect_clicked(move |_| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    open_in_browser(&file);
+                }
+            });
+        }
+
+        // Terminal button: open terminal in file's parent dir
+        {
+            let current_file = Rc::clone(&current_file);
+            let terminal_container = terminal_container.clone();
+            let vte_terminal = vte_terminal.clone();
+            let config = Rc::clone(&config);
+            tv.terminal_btn.connect_clicked(move |_| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    let parent_dir = Path::new(&file)
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "/".to_string());
+                    terminal_container.set_visible(true);
+                    config.borrow_mut().terminal_visible = true;
+                    terminal::spawn_shell(&vte_terminal, &parent_dir);
+                }
+            });
+        }
+
+        // Copy button: copy file path to clipboard
+        {
+            let current_file = Rc::clone(&current_file);
+            let copy_btn = tv.copy_btn.clone();
+            copy_btn.connect_clicked(move |btn| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    btn.clipboard().set_text(&file);
+                }
+            });
+        }
+
         let right_paned = gtk::Paned::new(gtk::Orientation::Vertical);
-        right_paned.set_start_child(Some(&text_container));
+        right_paned.set_start_child(Some(&tv.container));
         right_paned.set_end_child(Some(&terminal_container));
         right_paned.set_resize_start_child(true);
         right_paned.set_resize_end_child(true);
@@ -59,78 +220,143 @@ impl Workspace {
             }
         }
 
-        // Main horizontal split (tree | editor+terminal)
+        // Left pane: tree + git panel
+        let left_vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        tree_scroll.set_vexpand(true);
+        left_vbox.append(&tree_scroll);
+
+        // Build on_open_file — single entry point for all file opens
+        let on_open_file: Rc<dyn Fn(&str)> = {
+            let text_view = tv.text_view.clone();
+            let gutter = tv.gutter.clone();
+            let path_label = tv.path_label.clone();
+            let view_toggle = tv.view_toggle.clone();
+            let diff_toggle = tv.diff_toggle.clone();
+            let preview_scroll = tv.preview_scroll.clone();
+            let open_btn = tv.open_btn.clone();
+            let edit_btn = tv.edit_btn.clone();
+            let browser_btn = tv.browser_btn.clone();
+            let terminal_btn = tv.terminal_btn.clone();
+            let copy_btn = tv.copy_btn.clone();
+            let chat_btn = tv.chat_btn.clone();
+            let selection = selection.clone();
+            let current_file = Rc::clone(&current_file);
+            let is_dark = Rc::clone(&is_dark);
+            let config = Rc::clone(&config);
+            let working_dir = working_dir.clone();
+            Rc::new(move |file_path: &str| {
+                let theme = if is_dark.get() {
+                    highlight::DARK_THEME
+                } else {
+                    highlight::LIGHT_THEME
+                };
+                textview::load_file(
+                    &text_view,
+                    &gutter,
+                    &path_label,
+                    file_path,
+                    theme,
+                    &view_toggle,
+                    &[
+                        &open_btn,
+                        &edit_btn,
+                        &browser_btn,
+                        &terminal_btn,
+                        &copy_btn,
+                        &chat_btn,
+                    ],
+                );
+                *current_file.borrow_mut() = file_path.to_string();
+                config.borrow_mut().open_file = Some(file_path.to_string());
+                select_file_in_tree(&selection, file_path);
+
+                // If preview mode is active, refresh preview
+                if view_toggle.is_active() {
+                    textview::load_preview(&preview_scroll, file_path, is_dark.get());
+                }
+
+                // Diff: check if file has git changes
+                let is_modified = git_panel::is_file_modified(file_path, &working_dir);
+                diff_toggle.set_sensitive(is_modified);
+                if diff_toggle.is_active()
+                    && is_modified
+                    && let Some(diff) = git_panel::get_file_diff(file_path, &working_dir)
+                {
+                    let line_count = diff.lines().count().max(1);
+                    git_panel::load_diff_into_buffer(
+                        &text_view.buffer(),
+                        &diff,
+                        is_dark.get(),
+                    );
+                    textview::update_gutter(&gutter, line_count);
+                }
+            })
+        };
+
+        // Git changes panel
+        let git_panel_rc: Option<Rc<RefCell<git_panel::GitPanel>>> =
+            git_panel::GitPanel::new(&working_dir, Rc::clone(&on_open_file)).map(|gp| {
+                left_vbox.append(&gp.container);
+                let rc = Rc::new(RefCell::new(gp));
+                git_panel::start_refresh_timer(&rc);
+                rc
+            });
+
+        // Main horizontal split (tree+git | editor+terminal)
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         paned.set_position(config.borrow().tree_pane_width);
-        paned.set_start_child(Some(&tree_scroll));
+        paned.set_start_child(Some(&left_vbox));
         paned.set_end_child(Some(&right_paned));
 
         // Single-click: open files / toggle directories
-        // Note: we don't use set_single_click_activate(true) because it moves
-        // selection on hover. Instead we handle clicks manually via GestureClick.
         let left_click = gtk::GestureClick::new();
         left_click.set_button(1);
-        left_click.connect_pressed(glib::clone!(
-            #[weak]
-            list_view,
-            #[weak]
-            text_view,
-            #[weak]
-            gutter,
-            #[weak]
-            path_label,
-            #[strong]
-            current_file,
-            #[strong]
-            is_dark,
-            #[strong]
-            config,
-            move |_gesture, n_press, x, y| {
-                if n_press != 1 {
-                    return;
-                }
-                let Some(picked) = list_view.pick(x, y, gtk::PickFlags::DEFAULT) else {
-                    return;
-                };
-                let mut current = Some(picked.clone());
-                while let Some(w) = current {
-                    if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
-                        if let Some(row) = expander.list_row()
-                            && let Some(entry) = row.item().and_downcast::<FileEntry>()
-                        {
-                            if entry.is_dir() {
-                                let on_content = expander.child().is_some_and(|child| {
-                                    let child_w: gtk::Widget = child.upcast();
-                                    let mut check = Some(picked.clone());
-                                    while let Some(c) = check {
-                                        if c == child_w {
-                                            return true;
-                                        }
-                                        check = c.parent();
-                                    }
-                                    false
-                                });
-                                if on_content {
-                                    row.set_expanded(!row.is_expanded());
-                                }
-                            } else {
-                                let path = entry.path();
-                                let theme = if is_dark.get() {
-                                    highlight::DARK_THEME
-                                } else {
-                                    highlight::LIGHT_THEME
-                                };
-                                textview::load_file(&text_view, &gutter, &path_label, &path, theme);
-                                *current_file.borrow_mut() = path.clone();
-                                config.borrow_mut().open_file = Some(path);
-                            }
-                        }
+        {
+            let on_open_file = Rc::clone(&on_open_file);
+            left_click.connect_pressed(glib::clone!(
+                #[weak]
+                list_view,
+                #[strong]
+                on_open_file,
+                move |_gesture, n_press, x, y| {
+                    if n_press != 1 {
                         return;
                     }
-                    current = w.parent();
+                    let Some(picked) = list_view.pick(x, y, gtk::PickFlags::DEFAULT) else {
+                        return;
+                    };
+                    let mut current = Some(picked.clone());
+                    while let Some(w) = current {
+                        if let Some(expander) = w.downcast_ref::<gtk::TreeExpander>() {
+                            if let Some(row) = expander.list_row()
+                                && let Some(entry) = row.item().and_downcast::<FileEntry>()
+                            {
+                                if entry.is_dir() {
+                                    let on_content = expander.child().is_some_and(|child| {
+                                        let child_w: gtk::Widget = child.upcast();
+                                        let mut check = Some(picked.clone());
+                                        while let Some(c) = check {
+                                            if c == child_w {
+                                                return true;
+                                            }
+                                            check = c.parent();
+                                        }
+                                        false
+                                    });
+                                    if on_content {
+                                        row.set_expanded(!row.is_expanded());
+                                    }
+                                } else {
+                                    on_open_file(&entry.path());
+                                }
+                            }
+                            return;
+                        }
+                        current = w.parent();
+                    }
                 }
-            }
-        ));
+            ));
+        }
         list_view.add_controller(left_click);
 
         // --- Right-click context menu ---
@@ -141,6 +367,9 @@ impl Workspace {
         menu.append(Some("Copy Path"), Some("ws.copy-path"));
         menu.append(Some("Add to Chat"), Some("ws.add-to-chat"));
         menu.append(Some("Open Terminal Here"), Some("ws.open-terminal-here"));
+        menu.append(Some("Open in Default App"), Some("ws.open-default"));
+        menu.append(Some("Edit in Text Editor"), Some("ws.edit-in-editor"));
+        menu.append(Some("Open in Browser"), Some("ws.open-in-browser"));
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(&list_view);
@@ -183,28 +412,6 @@ impl Workspace {
         ));
         list_view.add_controller(right_click);
 
-        // Agent panel callbacks
-        let on_open_file: Rc<dyn Fn(&str)> = {
-            let text_view = text_view.clone();
-            let gutter = gutter.clone();
-            let path_label = path_label.clone();
-            let selection = selection.clone();
-            let current_file = Rc::clone(&current_file);
-            let is_dark = Rc::clone(&is_dark);
-            let config = Rc::clone(&config);
-            Rc::new(move |file_path: &str| {
-                let theme = if is_dark.get() {
-                    highlight::DARK_THEME
-                } else {
-                    highlight::LIGHT_THEME
-                };
-                textview::load_file(&text_view, &gutter, &path_label, file_path, theme);
-                *current_file.borrow_mut() = file_path.to_string();
-                config.borrow_mut().open_file = Some(file_path.to_string());
-                select_file_in_tree(&selection, file_path);
-            })
-        };
-
         // Load agent profiles
         let agent_configs = session::list_agent_configs();
 
@@ -212,6 +419,14 @@ impl Workspace {
         let chat_history = Rc::new(RefCell::new(session::load_chat_history(
             &config.borrow().id,
         )));
+
+        // on_tool_result callback for git panel refresh
+        let on_tool_result: Option<Rc<dyn Fn()>> = git_panel_rc.as_ref().map(|gp| {
+            let gp = Rc::clone(gp);
+            Rc::new(move || {
+                gp.borrow().refresh();
+            }) as Rc<dyn Fn()>
+        });
 
         // Agent panel
         let (agent_panel_1, agent_input_1) = {
@@ -237,8 +452,21 @@ impl Workspace {
                 on_profile,
                 on_session,
                 Rc::clone(&chat_history),
+                on_tool_result,
             )
         };
+
+        // Wire chat button (needs agent_input_1)
+        {
+            let current_file = Rc::clone(&current_file);
+            let agent_input = agent_input_1.clone();
+            tv.chat_btn.connect_clicked(move |_| {
+                let file = current_file.borrow().clone();
+                if !file.is_empty() {
+                    append_path_to_input(&agent_input, &file);
+                }
+            });
+        }
 
         let agent_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         agent_container.set_width_request(420);
@@ -320,6 +548,45 @@ impl Workspace {
         }
         action_group.add_action(&action_add_chat);
 
+        // Open in Default App (right-click)
+        let action_open_default = gio::SimpleAction::new("open-default", None);
+        {
+            let ctx_path = Rc::clone(&ctx_path);
+            action_open_default.connect_activate(move |_, _| {
+                let path = ctx_path.borrow().clone();
+                if !path.is_empty() {
+                    let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                }
+            });
+        }
+        action_group.add_action(&action_open_default);
+
+        // Edit in Text Editor (right-click)
+        let action_edit = gio::SimpleAction::new("edit-in-editor", None);
+        {
+            let ctx_path = Rc::clone(&ctx_path);
+            action_edit.connect_activate(move |_, _| {
+                let path = ctx_path.borrow().clone();
+                if !path.is_empty() {
+                    open_in_text_editor(&path);
+                }
+            });
+        }
+        action_group.add_action(&action_edit);
+
+        // Open in Browser (right-click)
+        let action_browser = gio::SimpleAction::new("open-in-browser", None);
+        {
+            let ctx_path = Rc::clone(&ctx_path);
+            action_browser.connect_activate(move |_, _| {
+                let path = ctx_path.borrow().clone();
+                if !path.is_empty() {
+                    open_in_browser(&path);
+                }
+            });
+        }
+        action_group.add_action(&action_browser);
+
         // --- Gutter right-click: Copy Line Link / Add Line Link to Chat ---
         let gutter_ctx_line: Rc<Cell<u32>> = Rc::new(Cell::new(0));
 
@@ -331,32 +598,35 @@ impl Workspace {
         );
 
         let gutter_popover = gtk::PopoverMenu::from_model(Some(&gutter_menu));
-        gutter_popover.set_parent(&gutter);
+        gutter_popover.set_parent(&tv.gutter);
         gutter_popover.set_has_arrow(false);
 
         let gutter_click = gtk::GestureClick::new();
         gutter_click.set_button(3);
-        gutter_click.connect_pressed(glib::clone!(
-            #[weak]
-            gutter,
-            #[weak]
-            gutter_popover,
-            #[strong]
-            gutter_ctx_line,
-            move |gesture, _n_press, x, y| {
-                // Claim the sequence so the default TextView context menu is suppressed
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                let (bx, by) =
-                    gutter.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-                if let Some(iter) = gutter.iter_at_location(bx, by) {
-                    gutter_ctx_line.set(iter.line() as u32 + 1);
-                    gutter_popover
-                        .set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-                    gutter_popover.popup();
+        {
+            let gutter = tv.gutter.clone();
+            gutter_click.connect_pressed(glib::clone!(
+                #[weak]
+                gutter,
+                #[weak]
+                gutter_popover,
+                #[strong]
+                gutter_ctx_line,
+                move |gesture, _n_press, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let (bx, by) = gutter
+                        .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+                    if let Some(iter) = gutter.iter_at_location(bx, by) {
+                        gutter_ctx_line.set(iter.line() as u32 + 1);
+                        gutter_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                            x as i32, y as i32, 1, 1,
+                        )));
+                        gutter_popover.popup();
+                    }
                 }
-            }
-        ));
-        gutter.add_controller(gutter_click);
+            ));
+        }
+        tv.gutter.add_controller(gutter_click);
 
         // Copy Line Link
         let action_copy_line = gio::SimpleAction::new("copy-line-link", None);
@@ -489,41 +759,26 @@ impl Workspace {
         {
             let open_file = config.borrow().open_file.clone();
             if let Some(ref path) = open_file {
-                let theme = if is_dark.get() {
-                    highlight::DARK_THEME
-                } else {
-                    highlight::LIGHT_THEME
-                };
-                textview::load_file(&text_view, &gutter, &path_label, path, theme);
-                *current_file.borrow_mut() = path.clone();
-                select_file_in_tree(&selection, path);
+                on_open_file(path);
             }
         }
         // File-system watcher: auto-refresh tree and current file on changes
         let file_watcher = {
             let on_file_changed: Rc<dyn Fn()> = {
-                let text_view = text_view.clone();
-                let gutter = gutter.clone();
-                let path_label = path_label.clone();
+                let on_open_file = Rc::clone(&on_open_file);
                 let current_file = Rc::clone(&current_file);
-                let is_dark = Rc::clone(&is_dark);
                 Rc::new(move || {
                     let file = current_file.borrow().clone();
                     if !file.is_empty() {
-                        let theme = if is_dark.get() {
-                            highlight::DARK_THEME
-                        } else {
-                            highlight::LIGHT_THEME
-                        };
-                        textview::load_file(&text_view, &gutter, &path_label, &file, theme);
+                        on_open_file(&file);
                     }
                 })
             };
 
             let on_file_removed: Rc<dyn Fn()> = {
-                let text_view = text_view.clone();
-                let gutter = gutter.clone();
-                let path_label = path_label.clone();
+                let text_view = tv.text_view.clone();
+                let gutter = tv.gutter.clone();
+                let path_label = tv.path_label.clone();
                 let current_file = Rc::clone(&current_file);
                 let selection = selection.clone();
                 let config = Rc::clone(&config);
@@ -546,19 +801,12 @@ impl Workspace {
 
         // Re-highlight callback for theme changes
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
-            let text_view = text_view.clone();
-            let gutter = gutter.clone();
-            let path_label = path_label.clone();
+            let on_open_file = Rc::clone(&on_open_file);
             let current_file = Rc::clone(&current_file);
-            Rc::new(move |dark: bool| {
+            Rc::new(move |_dark: bool| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
-                    let theme = if dark {
-                        highlight::DARK_THEME
-                    } else {
-                        highlight::LIGHT_THEME
-                    };
-                    textview::load_file(&text_view, &gutter, &path_label, &file, theme);
+                    on_open_file(&file);
                 }
             })
         };
@@ -572,6 +820,78 @@ impl Workspace {
             _file_watcher: file_watcher,
         }
     }
+}
+
+fn open_in_text_editor(path: &str) {
+    for var in &["VISUAL", "EDITOR"] {
+        if let Ok(editor) = std::env::var(var)
+            && std::process::Command::new(&editor)
+                .arg(path)
+                .spawn()
+                .is_ok()
+        {
+            return;
+        }
+    }
+    for editor in &[
+        "gnome-text-editor",
+        "gedit",
+        "kate",
+        "code",
+        "xed",
+        "pluma",
+        "mousepad",
+    ] {
+        if std::process::Command::new(editor)
+            .arg(path)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+fn open_in_browser(path: &str) {
+    let uri = format!("file://{}", path);
+    // Try $BROWSER first
+    if let Ok(browser) = std::env::var("BROWSER")
+        && std::process::Command::new(&browser)
+            .arg(&uri)
+            .spawn()
+            .is_ok()
+    {
+        return;
+    }
+    // Try xdg-settings to find the default browser
+    if let Ok(out) = std::process::Command::new("xdg-settings")
+        .args(["get", "default-web-browser"])
+        .output()
+    {
+        let desktop = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !desktop.is_empty()
+            && std::process::Command::new("gtk-launch")
+                .arg(&desktop)
+                .arg(&uri)
+                .spawn()
+                .is_ok()
+        {
+            return;
+        }
+    }
+    // Fallback: sensible-browser (Debian/Ubuntu), x-www-browser, then common browsers
+    for browser in &["sensible-browser", "x-www-browser", "google-chrome", "chromium", "chromium-browser", "firefox"] {
+        if std::process::Command::new(browser)
+            .arg(&uri)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+    }
+    // Last resort
+    let _ = std::process::Command::new("xdg-open").arg(&uri).spawn();
 }
 
 fn append_path_to_input(input: &gtk::TextView, path: &str) {
