@@ -27,6 +27,7 @@ impl Workspace {
     pub fn new(
         config: WorkspaceConfig,
         is_dark: Rc<Cell<bool>>,
+        notifications_enabled: Rc<Cell<bool>>,
         tab_spinner: gtk::Spinner,
     ) -> Self {
         let working_dir = PathBuf::from(&config.working_directory);
@@ -443,6 +444,7 @@ impl Workspace {
             agent_panel::create_agent_panel(
                 Rc::clone(&on_open_file),
                 Rc::clone(&is_dark),
+                Rc::clone(&notifications_enabled),
                 tab_spinner.clone(),
                 &working_dir,
                 "Agent",
