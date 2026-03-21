@@ -21,6 +21,7 @@ pub struct Workspace {
     pub config: Rc<RefCell<WorkspaceConfig>>,
     pub tab_spinner: gtk::Spinner,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
+    pub vte_terminal: vte4::Terminal,
     /// Called on theme change to re-highlight the current file.
     pub on_theme_rehighlight: Rc<dyn Fn(bool)>,
     // Prevent drop — stopping the watcher closes the channel and the GTK timer exits.
@@ -46,9 +47,18 @@ impl Workspace {
         // Right pane top: text view with toolbar
         let tv = textview::create_text_view();
 
-        // Right pane bottom: terminal (initially hidden)
+        // Right pane bottom: terminal (initially hidden, spawned if was visible)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
-        terminal_container.set_visible(config.borrow().terminal_visible);
+        let terminal_was_visible = config.borrow().terminal_visible;
+        terminal_container.set_visible(terminal_was_visible);
+        if terminal_was_visible {
+            // Restore previous scrollback if saved
+            let term_path = session::terminal_content_path(&config.borrow().id);
+            terminal::restore_scrollback(&vte_terminal, &term_path);
+            // Spawn a fresh shell in the workspace directory
+            let wd = working_dir.to_string_lossy().to_string();
+            terminal::spawn_shell(&vte_terminal, &wd);
+        }
 
         // --- Connect toggle handlers FIRST (before setting initial state) ---
 
@@ -835,6 +845,7 @@ impl Workspace {
             config,
             tab_spinner,
             chat_history,
+            vte_terminal,
             on_theme_rehighlight,
             _file_watcher: file_watcher,
         }

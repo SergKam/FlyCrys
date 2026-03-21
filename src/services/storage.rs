@@ -63,6 +63,12 @@ pub fn delete_workspace_config(id: &str) {
     let _ = fs::remove_file(path);
 }
 
+// --- Terminal scrollback persistence ---
+
+pub fn terminal_content_path(workspace_id: &str) -> PathBuf {
+    sessions_dir().join(format!("{workspace_id}_terminal.txt"))
+}
+
 // --- Chat history persistence ---
 
 fn chat_history_path(workspace_id: &str) -> PathBuf {
