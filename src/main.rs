@@ -122,13 +122,17 @@ struct TabSlot {
 
 impl TabSlot {
     /// Create a tab that is already built (for the active tab, or new tabs).
-    fn new_ready(config: WorkspaceConfig, is_dark: Rc<Cell<bool>>) -> Self {
+    fn new_ready(
+        config: WorkspaceConfig,
+        is_dark: Rc<Cell<bool>>,
+        notifications_enabled: Rc<Cell<bool>>,
+    ) -> Self {
         let spinner = gtk::Spinner::new();
         spinner.set_size_request(12, 12);
         let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
         wrapper.set_vexpand(true);
         wrapper.set_hexpand(true);
-        let ws = Workspace::new(config, is_dark, spinner.clone());
+        let ws = Workspace::new(config, is_dark, notifications_enabled, spinner.clone());
         wrapper.append(&ws.root);
         TabSlot {
             wrapper,
@@ -154,12 +158,12 @@ impl TabSlot {
     }
 
     /// Build the workspace if it hasn't been built yet.
-    fn materialize(&mut self, is_dark: Rc<Cell<bool>>) {
+    fn materialize(&mut self, is_dark: Rc<Cell<bool>>, notifications_enabled: Rc<Cell<bool>>) {
         if self.workspace.is_some() {
             return;
         }
         if let Some(config) = self.pending_config.take() {
-            let ws = Workspace::new(config, is_dark, self.spinner.clone());
+            let ws = Workspace::new(config, is_dark, notifications_enabled, self.spinner.clone());
             self.wrapper.append(&ws.root);
             self.workspace = Some(ws);
         }
@@ -200,6 +204,7 @@ fn build_ui(app: &gtk::Application) {
 
     // Theme state
     let is_dark = Rc::new(Cell::new(app_config.is_dark));
+    let notifications_enabled = Rc::new(Cell::new(app_config.notifications_enabled));
 
     // CSS
     let css = gtk::CssProvider::new();
@@ -283,6 +288,17 @@ fn build_ui(app: &gtk::Application) {
         theme_row.append(&theme_switch);
         popover_box.append(&theme_row);
 
+        // Notifications toggle
+        let notif_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let notif_label = gtk::Label::new(Some("Notifications"));
+        notif_label.set_hexpand(true);
+        notif_label.set_xalign(0.0);
+        let notif_switch = gtk::Switch::new();
+        notif_switch.set_active(notifications_enabled.get());
+        notif_row.append(&notif_label);
+        notif_row.append(&notif_switch);
+        popover_box.append(&notif_row);
+
         popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         // About button
@@ -301,6 +317,17 @@ fn build_ui(app: &gtk::Application) {
             let on_theme_change = Rc::clone(&on_theme_change);
             theme_switch.connect_state_set(move |_, dark| {
                 on_theme_change(dark);
+                glib::Propagation::Proceed
+            });
+        }
+
+        // Notifications switch handler
+        {
+            let notifications_enabled = Rc::clone(&notifications_enabled);
+            let app_state = Rc::clone(&app_state);
+            notif_switch.connect_state_set(move |_, enabled| {
+                notifications_enabled.set(enabled);
+                app_state.borrow_mut().config.notifications_enabled = enabled;
                 glib::Propagation::Proceed
             });
         }
@@ -367,7 +394,7 @@ fn build_ui(app: &gtk::Application) {
         app_config.active_tab = 0;
 
         let label_text = ws_config.tab_label();
-        let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark));
+        let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
         let label = create_tab_label(
             &label_text,
             &slot.spinner,
@@ -382,7 +409,7 @@ fn build_ui(app: &gtk::Application) {
         let labels = session::dedup_labels(&workspace_configs);
         for (i, ws_config) in workspace_configs.into_iter().enumerate() {
             let slot = if i == active_idx {
-                TabSlot::new_ready(ws_config, Rc::clone(&is_dark))
+                TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled))
             } else {
                 TabSlot::new_pending(ws_config)
             };
@@ -412,6 +439,8 @@ fn build_ui(app: &gtk::Application) {
         app_state,
         #[strong]
         is_dark,
+        #[strong]
+        notifications_enabled,
         move |btn| {
             let dialog = gtk::FileDialog::builder()
                 .title("Open Folder for New Workspace")
@@ -422,6 +451,7 @@ fn build_ui(app: &gtk::Application) {
             let notebook = notebook.clone();
             let app_state = Rc::clone(&app_state);
             let is_dark = Rc::clone(&is_dark);
+            let notifications_enabled = Rc::clone(&notifications_enabled);
 
             dialog.select_folder(window.as_ref(), None::<&gio::Cancellable>, move |result| {
                 if let Ok(folder) = result
@@ -431,7 +461,7 @@ fn build_ui(app: &gtk::Application) {
                     let ws_config = WorkspaceConfig::new(&dir);
                     let label_text = ws_config.tab_label();
 
-                    let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark));
+                    let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
                     let label = create_tab_label(
                         &label_text,
                         &slot.spinner,
@@ -457,11 +487,13 @@ fn build_ui(app: &gtk::Application) {
         app_state,
         #[strong]
         is_dark,
+        #[strong]
+        notifications_enabled,
         move |_nb, _page, page_num| {
             let mut state = app_state.borrow_mut();
             state.config.active_tab = page_num as usize;
             if let Some(slot) = state.slots.get_mut(page_num as usize) {
-                slot.materialize(Rc::clone(&is_dark));
+                slot.materialize(Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
             }
         }
     ));

@@ -43,6 +43,7 @@ struct PanelState {
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     on_profile_change: Rc<dyn Fn(&str)>,
     on_tool_result: Option<Rc<dyn Fn()>>,
+    notifications_enabled: Rc<Cell<bool>>,
     // Token & cost tracking
     context_tokens: u64,
     context_window_max: u64,
@@ -61,6 +62,7 @@ struct AttachedImage {
 pub fn create_agent_panel(
     on_open_file: Rc<dyn Fn(&str)>,
     is_dark: Rc<Cell<bool>>,
+    notifications_enabled: Rc<Cell<bool>>,
     tab_spinner: gtk::Spinner,
     working_dir: &std::path::Path,
     title_text: &str,
@@ -269,6 +271,7 @@ pub fn create_agent_panel(
         on_session_id_change,
         on_profile_change,
         on_tool_result,
+        notifications_enabled,
         context_tokens: 0,
         context_window_max: DEFAULT_CONTEXT_WINDOW,
         total_cost_usd: 0.0,
@@ -932,6 +935,25 @@ fn handle_event(
             s.current_text_label = None;
             s.current_text.clear();
             s.process.state = ProcessState::Idle;
+
+            // Desktop notification
+            if s.notifications_enabled.get()
+                && let Some(app) = gio::Application::default()
+            {
+                let dir_name = s
+                    .working_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let notification = gio::Notification::new("FlyCrys");
+                if is_error {
+                    notification.set_body(Some(&format!("Agent error in {dir_name}")));
+                } else {
+                    notification.set_body(Some(&format!("Agent finished in {dir_name}")));
+                }
+                app.send_notification(None, &notification);
+            }
+
             if let Some(ref cb) = s.on_tool_result {
                 cb();
             }

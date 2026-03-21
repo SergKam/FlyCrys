@@ -24,6 +24,8 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub window_maximized: bool,
     pub is_dark: bool,
+    #[serde(default = "default_true")]
+    pub notifications_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -39,6 +41,7 @@ impl Default for AppConfig {
             window_height: 800,
             window_maximized: true,
             is_dark: false,
+            notifications_enabled: true,
         }
     }
 }
