@@ -3,8 +3,10 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
+
+use crate::config::constants::GIT_REFRESH_INTERVAL_SECS;
+use crate::services::git as git_service;
 
 pub struct GitPanel {
     pub container: gtk::Box,
@@ -16,11 +18,7 @@ pub struct GitPanel {
 impl GitPanel {
     pub fn new(working_dir: &Path, on_open_file: Rc<dyn Fn(&str)>) -> Option<Self> {
         // Check if this is a git repo
-        let out = Command::new("git")
-            .args(["-C", &working_dir.to_string_lossy(), "rev-parse", "--git-dir"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
+        if !git_service::is_git_repo(working_dir) {
             return None;
         }
 
@@ -65,32 +63,13 @@ impl GitPanel {
             self.list_box.remove(&child);
         }
 
-        let output = Command::new("git")
-            .args([
-                "-C",
-                &self.working_dir.to_string_lossy(),
-                "status",
-                "--porcelain",
-            ])
-            .output();
-
-        let lines = match output {
-            Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+        let entries = match git_service::status(&self.working_dir) {
+            Ok(entries) => entries,
             Err(_) => {
                 self.container.set_visible(false);
                 return;
             }
         };
-
-        let entries: Vec<(String, String)> = lines
-            .lines()
-            .filter(|l| l.len() >= 3)
-            .map(|l| {
-                let status = l[..2].trim().to_string();
-                let path = l[3..].to_string();
-                (status, path)
-            })
-            .collect();
 
         if entries.is_empty() {
             self.container.set_visible(false);
@@ -99,25 +78,35 @@ impl GitPanel {
 
         self.container.set_visible(true);
 
-        for (status, path) in &entries {
+        for entry in &entries {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.set_margin_start(8);
             row.set_margin_end(8);
             row.set_margin_top(1);
             row.set_margin_bottom(1);
 
-            let status_label = gtk::Label::new(Some(status));
+            let status_label = gtk::Label::new(Some(&entry.raw_status));
             status_label.set_width_chars(2);
             status_label.add_css_class("monospace");
-            match status.as_str() {
-                "M" | "MM" => status_label.add_css_class("git-modified"),
-                "A" | "AM" => status_label.add_css_class("git-added"),
-                "D" => status_label.add_css_class("git-deleted"),
-                "??" => status_label.add_css_class("git-untracked"),
-                _ => status_label.add_css_class("git-modified"),
+            match &entry.status {
+                git_service::GitFileStatus::Modified => {
+                    status_label.add_css_class("git-modified");
+                }
+                git_service::GitFileStatus::Added => {
+                    status_label.add_css_class("git-added");
+                }
+                git_service::GitFileStatus::Deleted => {
+                    status_label.add_css_class("git-deleted");
+                }
+                git_service::GitFileStatus::Untracked => {
+                    status_label.add_css_class("git-untracked");
+                }
+                _ => {
+                    status_label.add_css_class("git-modified");
+                }
             }
 
-            let path_label = gtk::Label::new(Some(path));
+            let path_label = gtk::Label::new(Some(&entry.path));
             path_label.set_xalign(0.0);
             path_label.set_hexpand(true);
             path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
@@ -126,7 +115,11 @@ impl GitPanel {
             row.append(&status_label);
             row.append(&path_label);
 
-            let full_path = self.working_dir.join(path).to_string_lossy().to_string();
+            let full_path = self
+                .working_dir
+                .join(&entry.path)
+                .to_string_lossy()
+                .to_string();
             let on_open = self.on_open_file.clone();
             let gesture = gtk::GestureClick::new();
             gesture.set_button(1);
@@ -141,70 +134,28 @@ impl GitPanel {
     }
 }
 
-/// Start a 5-second refresh timer for the git panel.
+/// Start a periodic refresh timer for the git panel.
 pub fn start_refresh_timer(panel: &Rc<RefCell<GitPanel>>) {
     let panel = Rc::clone(panel);
-    glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
-        panel.borrow().refresh();
-        glib::ControlFlow::Continue
-    });
+    glib::timeout_add_local(
+        std::time::Duration::from_secs(GIT_REFRESH_INTERVAL_SECS),
+        move || {
+            panel.borrow().refresh();
+            glib::ControlFlow::Continue
+        },
+    );
 }
 
 /// Check if a file has uncommitted git changes.
+/// Delegates to services::git.
 pub fn is_file_modified(file_path: &str, working_dir: &Path) -> bool {
-    let rel = Path::new(file_path)
-        .strip_prefix(working_dir)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| file_path.to_string());
-
-    let output = Command::new("git")
-        .args([
-            "-C",
-            &working_dir.to_string_lossy(),
-            "status",
-            "--porcelain",
-            "--",
-            &rel,
-        ])
-        .output();
-
-    match output {
-        Ok(out) => !out.stdout.is_empty(),
-        Err(_) => false,
-    }
+    git_service::is_file_modified(file_path, working_dir)
 }
 
 /// Get the git diff for a file. Returns None if no changes.
+/// Delegates to services::git.
 pub fn get_file_diff(file_path: &str, working_dir: &Path) -> Option<String> {
-    let rel = Path::new(file_path)
-        .strip_prefix(working_dir)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| file_path.to_string());
-    let wd = working_dir.to_string_lossy();
-
-    // Try HEAD (all uncommitted changes)
-    if let Some(diff) = run_git_diff(&wd, &["diff", "HEAD", "--", &rel]) {
-        return Some(diff);
-    }
-    // Try unstaged only
-    if let Some(diff) = run_git_diff(&wd, &["diff", "--", &rel]) {
-        return Some(diff);
-    }
-    // Try staged only
-    run_git_diff(&wd, &["diff", "--cached", "--", &rel])
-}
-
-fn run_git_diff(wd: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(wd)
-        .args(args)
-        .output()
-        .ok()?;
-    if output.stdout.is_empty() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+    git_service::diff_file(working_dir, file_path)
 }
 
 /// Load diff text into a TextBuffer with colored tags.

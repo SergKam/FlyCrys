@@ -102,40 +102,41 @@ fn diff_to_pango_with_rust_syntax() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// AgentProcess: ProcessState
+// ClaudeBackend: process state
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
 fn process_state_idle_by_default() {
-    use flycrys::agent_process::ProcessState;
-    let proc = flycrys::agent_process::AgentProcess::new();
-    assert_eq!(proc.state, ProcessState::Idle);
+    use flycrys::services::cli::AgentBackend;
+    let proc = flycrys::services::cli::claude::ClaudeBackend::new();
     assert!(!proc.is_alive());
+    assert!(!proc.is_running());
+    assert!(!proc.is_paused());
 }
 
 #[test]
 fn process_state_pause_resume_without_child() {
-    use flycrys::agent_process::ProcessState;
-    let mut proc = flycrys::agent_process::AgentProcess::new();
+    use flycrys::services::cli::AgentBackend;
+    let mut proc = flycrys::services::cli::claude::ClaudeBackend::new();
 
     // Pause on idle process is a no-op (no pid)
     proc.pause();
-    assert_eq!(proc.state, ProcessState::Idle);
+    assert!(!proc.is_alive());
 
     // Resume on idle process is a no-op
     proc.resume();
-    assert_eq!(proc.state, ProcessState::Idle);
+    assert!(!proc.is_alive());
 
     // Stop on idle process cleans up gracefully
     proc.stop();
-    assert_eq!(proc.state, ProcessState::Idle);
     assert!(!proc.is_alive());
+    assert!(!proc.is_running());
 }
 
 #[test]
 fn process_drop_is_safe_when_idle() {
-    // Dropping an idle AgentProcess should not panic
-    let proc = flycrys::agent_process::AgentProcess::new();
+    // Dropping an idle ClaudeBackend should not panic
+    let proc = flycrys::services::cli::claude::ClaudeBackend::new();
     drop(proc);
 }
 

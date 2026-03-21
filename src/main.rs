@@ -5,72 +5,13 @@ use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use flycrys::config::constants::AUTOSAVE_INTERVAL_SECS;
+use flycrys::config::theme::css_for_theme;
+use flycrys::config::types::{NotificationLevel, Theme};
 use flycrys::session::{self, AppConfig, WorkspaceConfig};
 use flycrys::workspace::Workspace;
 
 const APP_ID: &str = "com.flycrys.app";
-
-fn light_css() -> &'static str {
-    r#"
-    .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
-    .tool-call {
-        background-color: #ffffff;
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        padding: 6px;
-    }
-    .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
-    .error-text { color: @error_color; }
-    .monospace { font-family: monospace; font-size: 0.9em; }
-    .code-view text { background-color: #ffffff; color: #333333; }
-    .line-gutter text { background-color: #f0f0f0; color: #999999; }
-    .image-thumb { border-radius: 4px; }
-    .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
-    button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
-    listview.file-tree > row:selected {
-        border-left: 3px solid #3584e4;
-        font-weight: bold;
-    }
-    paned > separator { background-color: #c0c0c0; min-width: 2px; min-height: 2px; }
-    notebook header tabs tab { min-height: 0; padding: 4px 8px; }
-    .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
-    .git-modified { color: #e5a50a; font-weight: bold; }
-    .git-added { color: #2ec27e; font-weight: bold; }
-    .git-deleted { color: #e01b24; font-weight: bold; }
-    .git-untracked { color: alpha(@window_fg_color, 0.45); }
-    "#
-}
-
-fn dark_css() -> &'static str {
-    r#"
-    .user-message { background: alpha(@accent_bg_color, 0.15); border-radius: 8px; }
-    .tool-call {
-        background-color: #383838;
-        border: 1px solid #555555;
-        border-radius: 6px;
-        padding: 6px;
-    }
-    .system-info { color: alpha(@window_fg_color, 0.5); font-size: small; }
-    .error-text { color: @error_color; }
-    .monospace { font-family: monospace; font-size: 0.9em; }
-    .code-view text { background-color: #2d2d2d; color: #d3d0c8; }
-    .line-gutter text { background-color: #252525; color: #666666; }
-    .image-thumb { border-radius: 4px; }
-    .attach-thumb { border-radius: 4px; border: 1px solid alpha(@window_fg_color, 0.2); }
-    button.file-link { padding: 0 2px; min-height: 0; min-width: 0; }
-    listview.file-tree > row:selected {
-        border-left: 3px solid #3584e4;
-        font-weight: bold;
-    }
-    paned > separator { background-color: #555555; min-width: 2px; min-height: 2px; }
-    notebook header tabs tab { min-height: 0; padding: 4px 8px; }
-    .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
-    .git-modified { color: #e5a50a; font-weight: bold; }
-    .git-added { color: #2ec27e; font-weight: bold; }
-    .git-deleted { color: #e01b24; font-weight: bold; }
-    .git-untracked { color: alpha(@window_fg_color, 0.45); }
-    "#
-}
 
 fn main() -> glib::ExitCode {
     // No application ID → each process is independent (no D-Bus single-instance).
@@ -124,15 +65,15 @@ impl TabSlot {
     /// Create a tab that is already built (for the active tab, or new tabs).
     fn new_ready(
         config: WorkspaceConfig,
-        is_dark: Rc<Cell<bool>>,
-        notifications_enabled: Rc<Cell<bool>>,
+        theme: Rc<Cell<Theme>>,
+        notification_level: Rc<Cell<NotificationLevel>>,
     ) -> Self {
         let spinner = gtk::Spinner::new();
         spinner.set_size_request(12, 12);
         let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
         wrapper.set_vexpand(true);
         wrapper.set_hexpand(true);
-        let ws = Workspace::new(config, is_dark, notifications_enabled, spinner.clone());
+        let ws = Workspace::new(config, theme, notification_level, spinner.clone());
         wrapper.append(&ws.root);
         TabSlot {
             wrapper,
@@ -158,12 +99,16 @@ impl TabSlot {
     }
 
     /// Build the workspace if it hasn't been built yet.
-    fn materialize(&mut self, is_dark: Rc<Cell<bool>>, notifications_enabled: Rc<Cell<bool>>) {
+    fn materialize(
+        &mut self,
+        theme: Rc<Cell<Theme>>,
+        notification_level: Rc<Cell<NotificationLevel>>,
+    ) {
         if self.workspace.is_some() {
             return;
         }
         if let Some(config) = self.pending_config.take() {
-            let ws = Workspace::new(config, is_dark, notifications_enabled, self.spinner.clone());
+            let ws = Workspace::new(config, theme, notification_level, self.spinner.clone());
             self.wrapper.append(&ws.root);
             self.workspace = Some(ws);
         }
@@ -203,23 +148,19 @@ fn build_ui(app: &gtk::Application) {
     let mut app_config = session::load_app_config();
 
     // Theme state
-    let is_dark = Rc::new(Cell::new(app_config.is_dark));
-    let notifications_enabled = Rc::new(Cell::new(app_config.notifications_enabled));
+    let theme = Rc::new(Cell::new(app_config.theme));
+    let notification_level = Rc::new(Cell::new(app_config.notification_level));
 
     // CSS
     let css = gtk::CssProvider::new();
-    css.load_from_string(if app_config.is_dark {
-        dark_css()
-    } else {
-        light_css()
-    });
+    css.load_from_string(css_for_theme(app_config.theme));
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().unwrap(),
         &css,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    if app_config.is_dark
+    if app_config.theme.is_dark()
         && let Some(settings) = gtk::Settings::default()
     {
         settings.set_gtk_application_prefer_dark_theme(true);
@@ -238,15 +179,16 @@ fn build_ui(app: &gtk::Application) {
     // Theme change callback (shared across all workspaces)
     let on_theme_change: Rc<dyn Fn(bool)> = {
         let css = css.clone();
-        let is_dark = Rc::clone(&is_dark);
+        let theme = Rc::clone(&theme);
         let app_state = Rc::clone(&app_state);
         Rc::new(move |dark: bool| {
-            is_dark.set(dark);
-            css.load_from_string(if dark { dark_css() } else { light_css() });
+            let new_theme = if dark { Theme::Dark } else { Theme::Light };
+            theme.set(new_theme);
+            css.load_from_string(css_for_theme(new_theme));
             if let Some(settings) = gtk::Settings::default() {
                 settings.set_gtk_application_prefer_dark_theme(dark);
             }
-            app_state.borrow_mut().config.is_dark = dark;
+            app_state.borrow_mut().config.theme = new_theme;
             // Re-highlight only materialised workspaces
             let rehighlighters: Vec<_> = app_state
                 .borrow()
@@ -266,113 +208,13 @@ fn build_ui(app: &gtk::Application) {
 
     // Burger menu on the left side of the tab bar
     {
-        let menu_btn = gtk::MenuButton::new();
-        menu_btn.set_icon_name("open-menu-symbolic");
-        menu_btn.set_tooltip_text(Some("Menu"));
-        menu_btn.set_has_frame(false);
-
-        let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        popover_box.set_margin_start(10);
-        popover_box.set_margin_end(10);
-        popover_box.set_margin_top(10);
-        popover_box.set_margin_bottom(10);
-
-        // Dark Theme toggle
-        let theme_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let theme_label = gtk::Label::new(Some("Dark Theme"));
-        theme_label.set_hexpand(true);
-        theme_label.set_xalign(0.0);
-        let theme_switch = gtk::Switch::new();
-        theme_switch.set_active(is_dark.get());
-        theme_row.append(&theme_label);
-        theme_row.append(&theme_switch);
-        popover_box.append(&theme_row);
-
-        // Notifications toggle
-        let notif_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let notif_label = gtk::Label::new(Some("Notifications"));
-        notif_label.set_hexpand(true);
-        notif_label.set_xalign(0.0);
-        let notif_switch = gtk::Switch::new();
-        notif_switch.set_active(notifications_enabled.get());
-        notif_row.append(&notif_label);
-        notif_row.append(&notif_switch);
-        popover_box.append(&notif_row);
-
-        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // About button
-        let about_btn = gtk::Button::with_label("About");
-        about_btn.set_has_frame(false);
-        popover_box.append(&about_btn);
-
-        let popover = gtk::Popover::new();
-        popover.set_child(Some(&popover_box));
-        menu_btn.set_popover(Some(&popover));
-
+        let menu_btn = build_settings_menu(
+            Rc::clone(&theme),
+            Rc::clone(&notification_level),
+            Rc::clone(&app_state),
+            Rc::clone(&on_theme_change),
+        );
         notebook.set_action_widget(&menu_btn, gtk::PackType::Start);
-
-        // Theme switch handler
-        {
-            let on_theme_change = Rc::clone(&on_theme_change);
-            theme_switch.connect_state_set(move |_, dark| {
-                on_theme_change(dark);
-                glib::Propagation::Proceed
-            });
-        }
-
-        // Notifications switch handler
-        {
-            let notifications_enabled = Rc::clone(&notifications_enabled);
-            let app_state = Rc::clone(&app_state);
-            notif_switch.connect_state_set(move |_, enabled| {
-                notifications_enabled.set(enabled);
-                app_state.borrow_mut().config.notifications_enabled = enabled;
-                glib::Propagation::Proceed
-            });
-        }
-
-        // About dialog handler
-        {
-            let popover = popover.clone();
-            about_btn.connect_clicked(move |btn| {
-                popover.popdown();
-
-                let claude_version = std::process::Command::new("claude")
-                    .arg("--version")
-                    .output()
-                    .ok()
-                    .and_then(|out| String::from_utf8(out.stdout).ok())
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| "not found".to_string());
-
-                // Load the app logo from the icons directory
-                let logo = load_about_logo();
-
-                let mut builder = gtk::AboutDialog::builder()
-                    .program_name("FlyCrys")
-                    .version(env!("CARGO_PKG_VERSION"))
-                    .comments(format!(
-                        "Fast like a fly, solid like a crystal\n\
-                         GTK4 workspace with AI agent integration\n\n\
-                         Claude CLI: {}",
-                        claude_version
-                    ))
-                    .license_type(gtk::License::MitX11)
-                    .modal(true);
-
-                if let Some(ref texture) = logo {
-                    builder = builder.logo(texture);
-                }
-
-                let about = builder.build();
-
-                if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
-                    about.set_transient_for(Some(&window));
-                }
-                about.present();
-            });
-        }
     }
 
     // ── Load workspaces (lazy: only active tab is built) ────────────────
@@ -394,7 +236,7 @@ fn build_ui(app: &gtk::Application) {
         app_config.active_tab = 0;
 
         let label_text = ws_config.tab_label();
-        let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
+        let slot = TabSlot::new_ready(ws_config, Rc::clone(&theme), Rc::clone(&notification_level));
         let label = create_tab_label(
             &label_text,
             &slot.spinner,
@@ -409,7 +251,7 @@ fn build_ui(app: &gtk::Application) {
         let labels = session::dedup_labels(&workspace_configs);
         for (i, ws_config) in workspace_configs.into_iter().enumerate() {
             let slot = if i == active_idx {
-                TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled))
+                TabSlot::new_ready(ws_config, Rc::clone(&theme), Rc::clone(&notification_level))
             } else {
                 TabSlot::new_pending(ws_config)
             };
@@ -438,9 +280,9 @@ fn build_ui(app: &gtk::Application) {
         #[strong]
         app_state,
         #[strong]
-        is_dark,
+        theme,
         #[strong]
-        notifications_enabled,
+        notification_level,
         move |btn| {
             let dialog = gtk::FileDialog::builder()
                 .title("Open Folder for New Workspace")
@@ -450,8 +292,8 @@ fn build_ui(app: &gtk::Application) {
             let window = btn.root().and_downcast::<gtk::Window>();
             let notebook = notebook.clone();
             let app_state = Rc::clone(&app_state);
-            let is_dark = Rc::clone(&is_dark);
-            let notifications_enabled = Rc::clone(&notifications_enabled);
+            let theme = Rc::clone(&theme);
+            let notification_level = Rc::clone(&notification_level);
 
             dialog.select_folder(window.as_ref(), None::<&gio::Cancellable>, move |result| {
                 if let Ok(folder) = result
@@ -461,7 +303,11 @@ fn build_ui(app: &gtk::Application) {
                     let ws_config = WorkspaceConfig::new(&dir);
                     let label_text = ws_config.tab_label();
 
-                    let slot = TabSlot::new_ready(ws_config, Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
+                    let slot = TabSlot::new_ready(
+                        ws_config,
+                        Rc::clone(&theme),
+                        Rc::clone(&notification_level),
+                    );
                     let label = create_tab_label(
                         &label_text,
                         &slot.spinner,
@@ -486,14 +332,14 @@ fn build_ui(app: &gtk::Application) {
         #[strong]
         app_state,
         #[strong]
-        is_dark,
+        theme,
         #[strong]
-        notifications_enabled,
+        notification_level,
         move |_nb, _page, page_num| {
             let mut state = app_state.borrow_mut();
             state.config.active_tab = page_num as usize;
             if let Some(slot) = state.slots.get_mut(page_num as usize) {
-                slot.materialize(Rc::clone(&is_dark), Rc::clone(&notifications_enabled));
+                slot.materialize(Rc::clone(&theme), Rc::clone(&notification_level));
             }
         }
     ));
@@ -555,20 +401,145 @@ fn build_ui(app: &gtk::Application) {
         }
     ));
 
-    // Autosave every 5 seconds
+    // Autosave timer
     {
         let app_state = Rc::clone(&app_state);
-        glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
-            let state = app_state.borrow();
-            session::save_app_config(&state.config);
-            for slot in &state.slots {
-                slot.save();
-            }
-            glib::ControlFlow::Continue
-        });
+        glib::timeout_add_local(
+            std::time::Duration::from_secs(AUTOSAVE_INTERVAL_SECS),
+            move || {
+                let state = app_state.borrow();
+                session::save_app_config(&state.config);
+                for slot in &state.slots {
+                    slot.save();
+                }
+                glib::ControlFlow::Continue
+            },
+        );
     }
 
     window.present();
+}
+
+/// Build the settings menu button (burger menu) with theme toggle,
+/// notifications toggle, and about dialog.
+fn build_settings_menu(
+    theme: Rc<Cell<Theme>>,
+    notification_level: Rc<Cell<NotificationLevel>>,
+    app_state: Rc<RefCell<AppState>>,
+    on_theme_change: Rc<dyn Fn(bool)>,
+) -> gtk::MenuButton {
+    let menu_btn = gtk::MenuButton::new();
+    menu_btn.set_icon_name("open-menu-symbolic");
+    menu_btn.set_tooltip_text(Some("Menu"));
+    menu_btn.set_has_frame(false);
+
+    let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    popover_box.set_margin_start(10);
+    popover_box.set_margin_end(10);
+    popover_box.set_margin_top(10);
+    popover_box.set_margin_bottom(10);
+
+    // Dark Theme toggle
+    let theme_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let theme_label = gtk::Label::new(Some("Dark Theme"));
+    theme_label.set_hexpand(true);
+    theme_label.set_xalign(0.0);
+    let theme_switch = gtk::Switch::new();
+    theme_switch.set_active(theme.get().is_dark());
+    theme_row.append(&theme_label);
+    theme_row.append(&theme_switch);
+    popover_box.append(&theme_row);
+
+    // Notifications toggle
+    let notif_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let notif_label = gtk::Label::new(Some("Notifications"));
+    notif_label.set_hexpand(true);
+    notif_label.set_xalign(0.0);
+    let notif_switch = gtk::Switch::new();
+    notif_switch.set_active(notification_level.get().is_enabled());
+    notif_row.append(&notif_label);
+    notif_row.append(&notif_switch);
+    popover_box.append(&notif_row);
+
+    popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // About button
+    let about_btn = gtk::Button::with_label("About");
+    about_btn.set_has_frame(false);
+    popover_box.append(&about_btn);
+
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&popover_box));
+    menu_btn.set_popover(Some(&popover));
+
+    // Theme switch handler
+    {
+        let on_theme_change = Rc::clone(&on_theme_change);
+        theme_switch.connect_state_set(move |_, dark| {
+            on_theme_change(dark);
+            glib::Propagation::Proceed
+        });
+    }
+
+    // Notifications switch handler
+    {
+        let notification_level = Rc::clone(&notification_level);
+        let app_state = Rc::clone(&app_state);
+        notif_switch.connect_state_set(move |_, enabled| {
+            let level = if enabled {
+                NotificationLevel::All
+            } else {
+                NotificationLevel::Disabled
+            };
+            notification_level.set(level);
+            app_state.borrow_mut().config.notification_level = level;
+            glib::Propagation::Proceed
+        });
+    }
+
+    // About dialog handler
+    {
+        let popover = popover.clone();
+        about_btn.connect_clicked(move |btn| {
+            popover.popdown();
+
+            let claude_version = std::process::Command::new("claude")
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "not found".to_string());
+
+            // Load the app logo from the icons directory
+            let logo = load_about_logo();
+
+            let mut builder = gtk::AboutDialog::builder()
+                .program_name("FlyCrys")
+                .version(env!("CARGO_PKG_VERSION"))
+                .comments(format!(
+                    "Fast like a fly, solid like a crystal\n\
+                     GTK4 workspace with AI agent integration\n\n\
+                     Claude CLI: {}",
+                    claude_version
+                ))
+                .license_type(gtk::License::MitX11)
+                .modal(true);
+
+            if let Some(ref texture) = logo {
+                builder = builder.logo(texture);
+            }
+
+            let about = builder.build();
+
+            if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
+                about.set_transient_for(Some(&window));
+            }
+            about.present();
+        });
+    }
+
+    menu_btn
 }
 
 /// Create a tab label widget with spinner, text, and a close button
