@@ -216,6 +216,16 @@ cargo fmt -- --check         # check formatting without modifying
 cargo clippy                 # lint
 ```
 
+## Git Hooks
+
+Pre-commit hook runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test`.
+The hook lives in `hooks/pre-commit` (tracked in the repo).
+
+```bash
+# Enable hooks (once per clone):
+git config core.hooksPath hooks
+```
+
 ## Conventions
 
 - Use `gtk4 as gtk` alias throughout
