@@ -42,6 +42,7 @@ struct PanelState {
     session_id: Option<String>,
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     on_profile_change: Rc<dyn Fn(&str)>,
+    on_tool_result: Option<Rc<dyn Fn()>>,
     // Token & cost tracking
     context_tokens: u64,
     context_window_max: u64,
@@ -69,6 +70,7 @@ pub fn create_agent_panel(
     on_profile_change: Rc<dyn Fn(&str)>,
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     chat_history: Rc<RefCell<Vec<ChatMessage>>>,
+    on_tool_result: Option<Rc<dyn Fn()>>,
 ) -> (gtk::Box, gtk::TextView) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(420);
@@ -266,6 +268,7 @@ pub fn create_agent_panel(
         session_id: resume_session_id,
         on_session_id_change,
         on_profile_change,
+        on_tool_result,
         context_tokens: 0,
         context_window_max: DEFAULT_CONTEXT_WINDOW,
         total_cost_usd: 0.0,
@@ -843,6 +846,9 @@ fn handle_event(
                     is_error,
                 });
             }
+            if let Some(ref cb) = s.on_tool_result {
+                cb();
+            }
             scroll_to_bottom(scrolled);
         }
 
@@ -926,6 +932,9 @@ fn handle_event(
             s.current_text_label = None;
             s.current_text.clear();
             s.process.state = ProcessState::Idle;
+            if let Some(ref cb) = s.on_tool_result {
+                cb();
+            }
 
             scroll_to_bottom(scrolled);
         }

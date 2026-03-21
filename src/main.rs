@@ -34,6 +34,10 @@ fn light_css() -> &'static str {
     paned > separator { background-color: #c0c0c0; min-width: 2px; min-height: 2px; }
     notebook header tabs tab { min-height: 0; padding: 4px 8px; }
     .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
+    .git-modified { color: #e5a50a; font-weight: bold; }
+    .git-added { color: #2ec27e; font-weight: bold; }
+    .git-deleted { color: #e01b24; font-weight: bold; }
+    .git-untracked { color: alpha(@window_fg_color, 0.45); }
     "#
 }
 
@@ -61,6 +65,10 @@ fn dark_css() -> &'static str {
     paned > separator { background-color: #555555; min-width: 2px; min-height: 2px; }
     notebook header tabs tab { min-height: 0; padding: 4px 8px; }
     .toolbar-info { font-size: small; color: alpha(@window_fg_color, 0.55); margin: 0 4px; }
+    .git-modified { color: #e5a50a; font-weight: bold; }
+    .git-added { color: #2ec27e; font-weight: bold; }
+    .git-deleted { color: #e01b24; font-weight: bold; }
+    .git-untracked { color: alpha(@window_fg_color, 0.45); }
     "#
 }
 
@@ -471,24 +479,35 @@ fn build_ui(app: &gtk::Application) {
     }
 
     // Window
-    let window = gtk::ApplicationWindow::builder()
+    let mut window_builder = gtk::ApplicationWindow::builder()
         .application(app)
         .title("FlyCrys")
         .icon_name(APP_ID)
-        .default_width(app_config.window_width)
-        .default_height(app_config.window_height)
-        .child(&notebook)
-        .build();
+        .child(&notebook);
+
+    if !app_config.window_maximized {
+        window_builder = window_builder
+            .default_width(app_config.window_width)
+            .default_height(app_config.window_height);
+    }
+
+    let window = window_builder.build();
+
+    if app_config.window_maximized {
+        window.maximize();
+    }
 
     // Save window size on close
     window.connect_close_request(glib::clone!(
         #[strong]
         app_state,
         move |win| {
-            let (w, h) = win.default_size();
             let mut state = app_state.borrow_mut();
-            state.config.window_width = w;
-            state.config.window_height = h;
+            state.config.window_maximized = win.is_maximized();
+            if !win.is_maximized() {
+                state.config.window_width = win.width();
+                state.config.window_height = win.height();
+            }
 
             // Sync workspace order
             let ids: Vec<String> = state.slots.iter().map(|s| s.workspace_id()).collect();
