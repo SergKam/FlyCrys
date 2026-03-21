@@ -51,6 +51,7 @@ impl Workspace {
 
         // Right pane bottom: terminal (initially hidden, deferred spawn if was visible)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
+        terminal::apply_colors(&vte_terminal, theme.get());
         let terminal_dirty = Rc::new(Cell::new(false));
         let terminal_was_visible = config.borrow().terminal_visible;
         terminal_container.set_visible(terminal_was_visible);
@@ -841,15 +842,18 @@ impl Workspace {
             )
         };
 
-        // Re-highlight callback for theme changes
+        // Re-highlight and re-color callback for theme changes
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
             let on_open_file = Rc::clone(&on_open_file);
             let current_file = Rc::clone(&current_file);
-            Rc::new(move |_dark: bool| {
+            let vte = vte_terminal.clone();
+            Rc::new(move |dark: bool| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
                     on_open_file(&file);
                 }
+                let new_theme = if dark { Theme::Dark } else { Theme::Light };
+                terminal::apply_colors(&vte, new_theme);
             })
         };
 

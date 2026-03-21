@@ -1,9 +1,12 @@
+use gtk::gdk;
 use gtk::glib;
 use gtk4 as gtk;
 use std::path::Path;
+use std::process::Command;
 use vte4::prelude::*;
 
 use crate::config::constants::{DEFAULT_SHELL, TERMINAL_FONT, TERMINAL_SCROLLBACK_LINES};
+use crate::config::types::Theme;
 
 pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -46,6 +49,31 @@ pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
     ));
 
     (vbox, terminal)
+}
+
+/// Apply terminal colors matching the system terminal profile or our theme.
+///
+/// Tries to read GNOME Terminal's default profile via gsettings (works on
+/// GNOME, Cinnamon, and most Ubuntu-family desktops). Falls back to built-in
+/// palettes matching the active Theme.
+pub fn apply_colors(terminal: &vte4::Terminal, theme: Theme) {
+    if let Some(profile) = load_gnome_terminal_profile() {
+        let fg = parse_color(&profile.foreground).unwrap_or_else(|| fallback_fg(theme));
+        let bg = parse_color(&profile.background).unwrap_or_else(|| fallback_bg(theme));
+        let palette: Vec<gdk::RGBA> = profile
+            .palette
+            .iter()
+            .filter_map(|s| parse_color(s))
+            .collect();
+        if palette.len() >= 16 {
+            let refs: Vec<&gdk::RGBA> = palette.iter().collect();
+            terminal.set_colors(Some(&fg), Some(&bg), &refs);
+        } else {
+            apply_builtin_colors(terminal, theme);
+        }
+    } else {
+        apply_builtin_colors(terminal, theme);
+    }
 }
 
 pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
@@ -118,4 +146,97 @@ pub fn restore_scrollback(terminal: &vte4::Terminal, path: &Path) {
             terminal.feed(b"\x1b[0m\r\n");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GNOME Terminal profile reading
+// ---------------------------------------------------------------------------
+
+struct GnomeTerminalProfile {
+    foreground: String,
+    background: String,
+    palette: Vec<String>,
+}
+
+/// Try to read the default GNOME Terminal profile colors via gsettings.
+fn load_gnome_terminal_profile() -> Option<GnomeTerminalProfile> {
+    // Get the default profile UUID
+    let uuid = gsettings_get("org.gnome.Terminal.ProfilesList", "default")?;
+    let schema =
+        format!("org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{uuid}/");
+
+    // Check if the profile uses system theme colors — if so, read the explicit
+    // colors anyway (they're the defaults GNOME Terminal would use)
+    let fg = gsettings_get(&schema, "foreground-color")?;
+    let bg = gsettings_get(&schema, "background-color")?;
+    let palette_raw = gsettings_get(&schema, "palette")?;
+
+    // Parse the palette from gsettings array format: ['#xxx', '#yyy', ...]
+    let palette: Vec<String> = palette_raw
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|s| s.trim().trim_matches('\'').trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Some(GnomeTerminalProfile {
+        foreground: fg,
+        background: bg,
+        palette,
+    })
+}
+
+/// Run `gsettings get <schema> <key>` and return the trimmed, unquoted value.
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // gsettings wraps strings in single quotes: 'value'
+    Some(raw.trim_matches('\'').to_string())
+}
+
+/// Parse a color string like "#D3D7CF" or "rgb(211,215,207)" into gdk::RGBA.
+fn parse_color(s: &str) -> Option<gdk::RGBA> {
+    gdk::RGBA::parse(s).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Built-in fallback palettes (Tango-inspired, matching GNOME defaults)
+// ---------------------------------------------------------------------------
+
+fn fallback_fg(theme: Theme) -> gdk::RGBA {
+    match theme {
+        Theme::Dark => gdk::RGBA::parse("#D3D7CF").unwrap(),
+        Theme::Light => gdk::RGBA::parse("#2E3436").unwrap(),
+    }
+}
+
+fn fallback_bg(theme: Theme) -> gdk::RGBA {
+    match theme {
+        Theme::Dark => gdk::RGBA::parse("#2E3436").unwrap(),
+        Theme::Light => gdk::RGBA::parse("#FAFAFA").unwrap(),
+    }
+}
+
+/// Standard Tango palette — the same 16 colors GNOME Terminal uses by default.
+const TANGO_PALETTE: [&str; 16] = [
+    "#2E3436", "#CC0000", "#4E9A06", "#C4A000", "#3465A4", "#75507B", "#06989A", "#D3D7CF",
+    "#555753", "#EF2929", "#8AE234", "#FCE94F", "#729FCF", "#AD7FA8", "#34E2E2", "#EEEEEC",
+];
+
+fn apply_builtin_colors(terminal: &vte4::Terminal, theme: Theme) {
+    let fg = fallback_fg(theme);
+    let bg = fallback_bg(theme);
+    let palette: Vec<gdk::RGBA> = TANGO_PALETTE
+        .iter()
+        .filter_map(|s| gdk::RGBA::parse(*s).ok())
+        .collect();
+    let refs: Vec<&gdk::RGBA> = palette.iter().collect();
+    terminal.set_colors(Some(&fg), Some(&bg), &refs);
 }
