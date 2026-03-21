@@ -22,6 +22,8 @@ pub struct Workspace {
     pub tab_spinner: gtk::Spinner,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
     pub vte_terminal: vte4::Terminal,
+    /// True while a shell child process is running inside the terminal.
+    pub terminal_has_child: Rc<Cell<bool>>,
     /// Set by `contents-changed` signal, cleared after save.
     pub terminal_dirty: Rc<Cell<bool>>,
     /// Called on theme change to re-highlight the current file.
@@ -53,6 +55,7 @@ impl Workspace {
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
         terminal::apply_colors(&vte_terminal, theme.get());
         let terminal_dirty = Rc::new(Cell::new(false));
+        let terminal_has_child = Rc::new(Cell::new(false));
         let terminal_was_visible = config.borrow().terminal_visible;
         terminal_container.set_visible(terminal_was_visible);
         if terminal_was_visible {
@@ -60,10 +63,19 @@ impl Workspace {
             let vte = vte_terminal.clone();
             let ws_id = config.borrow().id.clone();
             let wd = working_dir.to_string_lossy().to_string();
+            let has_child = Rc::clone(&terminal_has_child);
             glib::idle_add_local_once(move || {
                 let term_path = session::terminal_content_path(&ws_id);
                 terminal::restore_scrollback(&vte, &term_path);
                 terminal::spawn_shell(&vte, &wd);
+                has_child.set(true);
+            });
+        }
+        // Clear the flag when the shell process exits
+        {
+            let has_child = Rc::clone(&terminal_has_child);
+            vte_terminal.connect_child_exited(move |_, _status| {
+                has_child.set(false);
             });
         }
         // Track terminal content changes via dirty flag
@@ -219,6 +231,7 @@ impl Workspace {
             let terminal_container = terminal_container.clone();
             let vte_terminal = vte_terminal.clone();
             let config = Rc::clone(&config);
+            let has_child = Rc::clone(&terminal_has_child);
             tv.terminal_btn.connect_clicked(move |_| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
@@ -228,7 +241,10 @@ impl Workspace {
                         .unwrap_or_else(|| "/".to_string());
                     terminal_container.set_visible(true);
                     config.borrow_mut().terminal_visible = true;
-                    terminal::spawn_shell(&vte_terminal, &parent_dir);
+                    if !has_child.get() {
+                        terminal::spawn_shell(&vte_terminal, &parent_dir);
+                        has_child.set(true);
+                    }
                 }
             });
         }
@@ -553,6 +569,7 @@ impl Workspace {
             let terminal_container = terminal_container.clone();
             let vte_terminal = vte_terminal.clone();
             let config = Rc::clone(&config);
+            let has_child = Rc::clone(&terminal_has_child);
             action_terminal.connect_activate(move |_, _| {
                 let path = ctx_path.borrow().clone();
                 let is_dir = *ctx_is_dir.borrow();
@@ -569,7 +586,10 @@ impl Workspace {
                 };
                 terminal_container.set_visible(true);
                 config.borrow_mut().terminal_visible = true;
-                terminal::spawn_shell(&vte_terminal, &dir);
+                if !has_child.get() {
+                    terminal::spawn_shell(&vte_terminal, &dir);
+                    has_child.set(true);
+                }
             });
         }
         action_group.add_action(&action_terminal);
@@ -863,6 +883,7 @@ impl Workspace {
             tab_spinner,
             chat_history,
             vte_terminal,
+            terminal_has_child,
             terminal_dirty,
             on_theme_rehighlight,
             _file_watcher: file_watcher,
