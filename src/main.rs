@@ -130,10 +130,11 @@ impl TabSlot {
         if let Some(ref ws) = self.workspace {
             session::save_workspace_config(&ws.config.borrow());
             session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
-            // Save terminal scrollback if terminal was visible
-            if ws.config.borrow().terminal_visible {
+            // Save terminal scrollback only if content changed since last save
+            if ws.terminal_dirty.get() {
                 let term_path = session::terminal_content_path(&ws.config.borrow().id);
                 terminal::save_scrollback(&ws.vte_terminal, &term_path);
+                ws.terminal_dirty.set(false);
             }
         } else if let Some(ref config) = self.pending_config {
             // Never visited — config is unchanged on disk, save for consistency

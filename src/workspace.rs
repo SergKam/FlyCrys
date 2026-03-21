@@ -1,10 +1,10 @@
 use gtk::gio;
 use gtk::glib;
-use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use vte4::prelude::*;
 
 use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, TREE_MAX_EXPAND_PASSES};
 use crate::config::types::{NotificationLevel, Theme};
@@ -22,6 +22,8 @@ pub struct Workspace {
     pub tab_spinner: gtk::Spinner,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
     pub vte_terminal: vte4::Terminal,
+    /// Set by `contents-changed` signal, cleared after save.
+    pub terminal_dirty: Rc<Cell<bool>>,
     /// Called on theme change to re-highlight the current file.
     pub on_theme_rehighlight: Rc<dyn Fn(bool)>,
     // Prevent drop — stopping the watcher closes the channel and the GTK timer exits.
@@ -49,6 +51,7 @@ impl Workspace {
 
         // Right pane bottom: terminal (initially hidden, deferred spawn if was visible)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
+        let terminal_dirty = Rc::new(Cell::new(false));
         let terminal_was_visible = config.borrow().terminal_visible;
         terminal_container.set_visible(terminal_was_visible);
         if terminal_was_visible {
@@ -60,6 +63,13 @@ impl Workspace {
                 let term_path = session::terminal_content_path(&ws_id);
                 terminal::restore_scrollback(&vte, &term_path);
                 terminal::spawn_shell(&vte, &wd);
+            });
+        }
+        // Track terminal content changes via dirty flag
+        {
+            let dirty = Rc::clone(&terminal_dirty);
+            vte_terminal.connect_contents_changed(move |_| {
+                dirty.set(true);
             });
         }
 
@@ -831,25 +841,6 @@ impl Workspace {
             )
         };
 
-        // Periodic terminal scrollback save — crash protection
-        {
-            use crate::config::constants::TERMINAL_SAVE_INTERVAL_SECS;
-            let vte = vte_terminal.clone();
-            let config = Rc::clone(&config);
-            glib::timeout_add_local(
-                std::time::Duration::from_secs(TERMINAL_SAVE_INTERVAL_SECS),
-                move || {
-                    if !vte.is_visible() {
-                        return glib::ControlFlow::Continue;
-                    }
-                    let ws_id = config.borrow().id.clone();
-                    let term_path = session::terminal_content_path(&ws_id);
-                    terminal::save_scrollback(&vte, &term_path);
-                    glib::ControlFlow::Continue
-                },
-            );
-        }
-
         // Re-highlight callback for theme changes
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
             let on_open_file = Rc::clone(&on_open_file);
@@ -868,6 +859,7 @@ impl Workspace {
             tab_spinner,
             chat_history,
             vte_terminal,
+            terminal_dirty,
             on_theme_rehighlight,
             _file_watcher: file_watcher,
         }
