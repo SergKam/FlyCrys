@@ -241,7 +241,9 @@ impl Workspace {
                         .unwrap_or_else(|| "/".to_string());
                     terminal_container.set_visible(true);
                     config.borrow_mut().terminal_visible = true;
-                    if !has_child.get() {
+                    if has_child.get() {
+                        terminal::send_cd(&vte_terminal, &parent_dir);
+                    } else {
                         terminal::spawn_shell(&vte_terminal, &parent_dir);
                         has_child.set(true);
                     }
@@ -586,7 +588,9 @@ impl Workspace {
                 };
                 terminal_container.set_visible(true);
                 config.borrow_mut().terminal_visible = true;
-                if !has_child.get() {
+                if has_child.get() {
+                    terminal::send_cd(&vte_terminal, &dir);
+                } else {
                     terminal::spawn_shell(&vte_terminal, &dir);
                     has_child.set(true);
                 }

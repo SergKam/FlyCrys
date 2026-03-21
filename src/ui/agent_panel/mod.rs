@@ -812,21 +812,25 @@ fn render_chat_message_widget(
         } => {
             let input_text = extract_tool_display(tool_name, tool_input);
             let file_path = extract_file_path(tool_input);
-            let (container, content_box, spinner, expander) = agent_widgets::create_tool_call(
+            let (container, header_label, content_box, spinner) = agent_widgets::create_tool_call(
                 tool_name,
                 &input_text,
                 file_path.as_deref(),
                 on_open.clone(),
             );
-            agent_widgets::fill_tool_result(
-                &content_box,
-                &spinner,
-                &expander,
-                output,
-                *is_error,
-                tool_name,
-                tool_input,
-            );
+            agent_widgets::mark_tool_complete(&spinner, &header_label, *is_error);
+            // Lazy render: only build output widget when user clicks to expand
+            let output = output.clone();
+            let tool_name = tool_name.clone();
+            let tool_input = tool_input.clone();
+            let is_err = *is_error;
+            let rendered = std::cell::Cell::new(false);
+            content_box.connect_map(move |cb| {
+                if !rendered.get() {
+                    rendered.set(true);
+                    agent_widgets::render_tool_output(cb, &output, is_err, &tool_name, &tool_input);
+                }
+            });
             container.upcast()
         }
         ChatMessage::System { text } => agent_widgets::create_system_message(text).upcast(),

@@ -92,6 +92,16 @@ pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
     );
 }
 
+/// Send a `cd` command to the running shell inside the terminal.
+/// Uses feed_child to write to the PTY stdin, simulating user input.
+pub fn send_cd(terminal: &vte4::Terminal, directory: &str) {
+    // Shell-escape the path by wrapping in single quotes
+    // (replace any ' inside the path with '\'' to break out and re-enter)
+    let escaped = directory.replace('\'', "'\\''");
+    let cmd = format!("cd '{}'\n", escaped);
+    terminal.feed_child(cmd.as_bytes());
+}
+
 /// Save terminal scrollback content to a file (plain text, non-blocking).
 ///
 /// Captures the scrollback into memory (fast, on main thread), then
