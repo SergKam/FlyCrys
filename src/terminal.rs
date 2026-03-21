@@ -2,6 +2,8 @@ use gtk::glib;
 use gtk4 as gtk;
 use vte4::prelude::*;
 
+use crate::config::constants::{DEFAULT_SHELL, TERMINAL_FONT, TERMINAL_SCROLLBACK_LINES};
+
 pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
@@ -25,9 +27,9 @@ pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
     let terminal = vte4::Terminal::new();
     terminal.set_vexpand(true);
     terminal.set_hexpand(true);
-    terminal.set_scrollback_lines(10000);
+    terminal.set_scrollback_lines(TERMINAL_SCROLLBACK_LINES);
 
-    let font_desc = gtk::pango::FontDescription::from_string("Monospace 11");
+    let font_desc = gtk::pango::FontDescription::from_string(TERMINAL_FONT);
     terminal.set_font(Some(&font_desc));
 
     vbox.append(&header);
@@ -46,7 +48,7 @@ pub fn create_terminal_panel() -> (gtk::Box, vte4::Terminal) {
 }
 
 pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
 
     terminal.spawn_async(
         vte4::PtyFlags::DEFAULT,

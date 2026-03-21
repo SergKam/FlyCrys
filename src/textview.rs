@@ -2,10 +2,9 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use std::path::Path;
 
+use crate::config::constants::{GUTTER_CHAR_WIDTH_PX, GUTTER_PADDING_PX, MAX_FILE_SIZE_BYTES};
 use crate::highlight;
 use crate::markdown;
-
-const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 pub struct TextViewPanel {
     pub container: gtk::Box,
@@ -31,15 +30,19 @@ pub enum PreviewKind {
 }
 
 pub fn is_previewable(path: &str) -> PreviewKind {
+    use crate::config::constants::{IMAGE_EXTENSIONS, MARKDOWN_EXTENSIONS};
+
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    match ext.as_str() {
-        "md" | "mdx" => PreviewKind::Markdown,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => PreviewKind::Image,
-        _ => PreviewKind::None,
+    if MARKDOWN_EXTENSIONS.contains(&ext.as_str()) {
+        PreviewKind::Markdown
+    } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        PreviewKind::Image
+    } else {
+        PreviewKind::None
     }
 }
 
@@ -236,7 +239,10 @@ pub fn load_file(
     }
 
     // Set preview toggle sensitivity; force source mode if not previewable
-    let previewable = matches!(is_previewable(file_path), PreviewKind::Markdown | PreviewKind::Image);
+    let previewable = matches!(
+        is_previewable(file_path),
+        PreviewKind::Markdown | PreviewKind::Image
+    );
     view_toggle.set_sensitive(previewable);
     if !previewable && view_toggle.is_active() {
         view_toggle.set_active(false); // triggers handler → swaps to source
@@ -245,11 +251,11 @@ pub fn load_file(
     let buffer = text_view.buffer();
 
     match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+        Ok(meta) if meta.len() > MAX_FILE_SIZE_BYTES => {
             buffer.set_text(&format!(
                 "File too large to display ({:.1} MB, max {} MB)",
                 meta.len() as f64 / (1024.0 * 1024.0),
-                MAX_FILE_SIZE / (1024 * 1024)
+                MAX_FILE_SIZE_BYTES / (1024 * 1024)
             ));
             update_gutter(gutter, 1);
             return;
@@ -311,8 +317,7 @@ pub fn load_preview(preview_scroll: &gtk::ScrolledWindow, file_path: &str, is_da
 
 pub fn update_gutter(gutter: &gtk::TextView, line_count: usize) {
     let digits = format!("{}", line_count).len().max(3);
-    // ~10px per digit + left(4) + right(8) margins
-    let width = digits as i32 * 10 + 12;
+    let width = digits as i32 * GUTTER_CHAR_WIDTH_PX + GUTTER_PADDING_PX;
     gutter.set_size_request(width, -1);
 
     let text: String = (1..=line_count)

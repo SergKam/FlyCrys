@@ -85,15 +85,14 @@ pub fn highlight_buffer_with_theme(
 }
 
 fn find_syntax<'a>(ss: &'a SyntaxSet, ext: &str) -> &'a syntect::parsing::SyntaxReference {
+    use crate::config::constants::SYNTAX_ALIASES;
+
     ss.find_syntax_by_extension(ext)
-        .or_else(|| match ext {
-            "mjs" | "cjs" => ss.find_syntax_by_extension("js"),
-            "jsx" => ss.find_syntax_by_extension("js"),
-            "tsx" => ss.find_syntax_by_extension("ts"),
-            "yml" => ss.find_syntax_by_extension("yaml"),
-            "mdx" => ss.find_syntax_by_extension("md"),
-            "toml" => ss.find_syntax_by_extension("toml"),
-            _ => None,
+        .or_else(|| {
+            SYNTAX_ALIASES
+                .iter()
+                .find(|(e, _)| *e == ext)
+                .and_then(|(_, canonical)| ss.find_syntax_by_extension(canonical))
         })
         .unwrap_or_else(|| ss.find_syntax_plain_text())
 }
@@ -185,42 +184,8 @@ fn escape_pango(s: &str) -> String {
 
 /// Check if a file extension is likely a text/code file worth highlighting.
 pub fn is_highlightable(file_path: &str) -> bool {
+    use crate::config::constants::HIGHLIGHTABLE_EXTENSIONS;
+
     let ext = file_path.rsplit('.').next().unwrap_or("");
-    matches!(
-        ext,
-        "js" | "mjs"
-            | "cjs"
-            | "jsx"
-            | "ts"
-            | "tsx"
-            | "json"
-            | "css"
-            | "scss"
-            | "less"
-            | "html"
-            | "htm"
-            | "xml"
-            | "svg"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "rs"
-            | "py"
-            | "rb"
-            | "go"
-            | "java"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "md"
-            | "mdx"
-            | "sql"
-            | "dockerfile"
-            | "makefile"
-            | "lua"
-    )
+    HIGHLIGHTABLE_EXTENSIONS.contains(&ext)
 }

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::config::constants::FILE_WATCHER_SYNC_MS;
 use crate::tree::{self, DirStoreMap};
 
 /// Watches only the directories currently visible in the file tree (expanded
@@ -51,11 +52,10 @@ impl FileWatcher {
 
         // Single timer: sync watched dirs with dir_stores, then drain events.
         let watcher_for_timer = Rc::clone(&watcher);
-        glib::timeout_add_local(Duration::from_millis(200), move || {
+        glib::timeout_add_local(Duration::from_millis(FILE_WATCHER_SYNC_MS), move || {
             // --- Sync watches with visible directories ---
             if let Some(ref mut w) = *watcher_for_timer.borrow_mut() {
-                let mut desired: HashSet<PathBuf> =
-                    dir_stores.borrow().keys().cloned().collect();
+                let mut desired: HashSet<PathBuf> = dir_stores.borrow().keys().cloned().collect();
 
                 // Also watch the parent dir of the currently open file
                 let current = current_file.borrow().clone();

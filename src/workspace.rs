@@ -6,10 +6,14 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, TREE_MAX_EXPAND_PASSES};
+use crate::config::types::{NotificationLevel, Theme};
 use crate::file_entry::FileEntry;
+use crate::services::platform;
 use crate::session::{self, WorkspaceConfig};
+use crate::ui::agent_panel;
 use crate::watcher::FileWatcher;
-use crate::{agent_panel, git_panel, highlight, terminal, textview, tree};
+use crate::{git_panel, highlight, terminal, textview, tree};
 
 /// All the widgets for a single workspace tab
 pub struct Workspace {
@@ -26,8 +30,8 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(
         config: WorkspaceConfig,
-        is_dark: Rc<Cell<bool>>,
-        notifications_enabled: Rc<Cell<bool>>,
+        theme: Rc<Cell<Theme>>,
+        notification_level: Rc<Cell<NotificationLevel>>,
         tab_spinner: gtk::Spinner,
     ) -> Self {
         let working_dir = PathBuf::from(&config.working_directory);
@@ -53,16 +57,21 @@ impl Workspace {
             let source_hbox = tv.source_hbox.clone();
             let preview_scroll = tv.preview_scroll.clone();
             let current_file = Rc::clone(&current_file);
-            let is_dark = Rc::clone(&is_dark);
+            let theme = Rc::clone(&theme);
             let config = Rc::clone(&config);
             tv.view_toggle.connect_toggled(move |toggle| {
-                config.borrow_mut().preview_mode = toggle.is_active();
-                if toggle.is_active() {
+                let is_preview = toggle.is_active();
+                config.borrow_mut().view_mode = if is_preview {
+                    crate::config::types::ViewMode::Preview
+                } else {
+                    crate::config::types::ViewMode::Source
+                };
+                if is_preview {
                     source_hbox.set_visible(false);
                     preview_scroll.set_visible(true);
                     let file = current_file.borrow().clone();
                     if !file.is_empty() {
-                        textview::load_preview(&preview_scroll, &file, is_dark.get());
+                        textview::load_preview(&preview_scroll, &file, theme.get().is_dark());
                     }
                 } else {
                     source_hbox.set_visible(true);
@@ -84,28 +93,33 @@ impl Workspace {
             let copy_btn = tv.copy_btn.clone();
             let chat_btn = tv.chat_btn.clone();
             let current_file = Rc::clone(&current_file);
-            let is_dark = Rc::clone(&is_dark);
+            let theme = Rc::clone(&theme);
             let config = Rc::clone(&config);
             let working_dir = working_dir.clone();
             tv.diff_toggle.connect_toggled(move |toggle| {
-                config.borrow_mut().show_diff = toggle.is_active();
+                let is_visible = toggle.is_active();
+                config.borrow_mut().diff_mode = if is_visible {
+                    crate::config::types::DiffMode::Visible
+                } else {
+                    crate::config::types::DiffMode::Hidden
+                };
                 let file = current_file.borrow().clone();
                 if file.is_empty() {
                     return;
                 }
-                if toggle.is_active() {
+                if is_visible {
                     if let Some(diff) = git_panel::get_file_diff(&file, &working_dir) {
                         let line_count = diff.lines().count().max(1);
                         git_panel::load_diff_into_buffer(
                             &text_view.buffer(),
                             &diff,
-                            is_dark.get(),
+                            theme.get().is_dark(),
                         );
                         textview::update_gutter(&gutter, line_count);
                     }
                 } else {
                     // Reload normal file
-                    let theme = if is_dark.get() {
+                    let hl_theme = if theme.get().is_dark() {
                         highlight::DARK_THEME
                     } else {
                         highlight::LIGHT_THEME
@@ -115,7 +129,7 @@ impl Workspace {
                         &gutter,
                         &path_label,
                         &file,
-                        theme,
+                        hl_theme,
                         &view_toggle,
                         &[
                             &open_btn,
@@ -132,10 +146,10 @@ impl Workspace {
 
         // Set initial toggle states from config (triggers handlers, but current_file is empty)
         {
-            let show_diff = config.borrow().show_diff;
-            tv.diff_toggle.set_active(show_diff);
-            let preview_mode = config.borrow().preview_mode;
-            if preview_mode {
+            let diff_mode = config.borrow().diff_mode;
+            tv.diff_toggle.set_active(diff_mode.is_visible());
+            let view_mode = config.borrow().view_mode;
+            if view_mode.is_preview() {
                 tv.view_toggle.set_active(true);
             }
         }
@@ -148,7 +162,7 @@ impl Workspace {
             tv.open_btn.connect_clicked(move |_| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
-                    let _ = std::process::Command::new("xdg-open").arg(&file).spawn();
+                    let _ = platform::open_with_default(&file);
                 }
             });
         }
@@ -159,7 +173,7 @@ impl Workspace {
             tv.edit_btn.connect_clicked(move |_| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
-                    open_in_text_editor(&file);
+                    let _ = platform::open_in_editor(&file);
                 }
             });
         }
@@ -170,7 +184,7 @@ impl Workspace {
             tv.browser_btn.connect_clicked(move |_| {
                 let file = current_file.borrow().clone();
                 if !file.is_empty() {
-                    open_in_browser(&file);
+                    let _ = platform::open_file_in_browser(&file);
                 }
             });
         }
@@ -242,11 +256,11 @@ impl Workspace {
             let chat_btn = tv.chat_btn.clone();
             let selection = selection.clone();
             let current_file = Rc::clone(&current_file);
-            let is_dark = Rc::clone(&is_dark);
+            let theme = Rc::clone(&theme);
             let config = Rc::clone(&config);
             let working_dir = working_dir.clone();
             Rc::new(move |file_path: &str| {
-                let theme = if is_dark.get() {
+                let hl_theme = if theme.get().is_dark() {
                     highlight::DARK_THEME
                 } else {
                     highlight::LIGHT_THEME
@@ -256,7 +270,7 @@ impl Workspace {
                     &gutter,
                     &path_label,
                     file_path,
-                    theme,
+                    hl_theme,
                     &view_toggle,
                     &[
                         &open_btn,
@@ -273,7 +287,7 @@ impl Workspace {
 
                 // If preview mode is active, refresh preview
                 if view_toggle.is_active() {
-                    textview::load_preview(&preview_scroll, file_path, is_dark.get());
+                    textview::load_preview(&preview_scroll, file_path, theme.get().is_dark());
                 }
 
                 // Diff: check if file has git changes
@@ -287,7 +301,7 @@ impl Workspace {
                     git_panel::load_diff_into_buffer(
                         &text_view.buffer(),
                         &diff,
-                        is_dark.get(),
+                        theme.get().is_dark(),
                     );
                     textview::update_gutter(&gutter, line_count);
                 }
@@ -443,8 +457,8 @@ impl Workspace {
             });
             agent_panel::create_agent_panel(
                 Rc::clone(&on_open_file),
-                Rc::clone(&is_dark),
-                Rc::clone(&notifications_enabled),
+                Rc::clone(&theme),
+                Rc::clone(&notification_level),
                 tab_spinner.clone(),
                 &working_dir,
                 "Agent",
@@ -471,7 +485,7 @@ impl Workspace {
         }
 
         let agent_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        agent_container.set_width_request(420);
+        agent_container.set_width_request(AGENT_PANEL_MIN_WIDTH);
         agent_container.append(&agent_panel_1);
 
         // Outer split: agents | content
@@ -557,7 +571,7 @@ impl Workspace {
             action_open_default.connect_activate(move |_, _| {
                 let path = ctx_path.borrow().clone();
                 if !path.is_empty() {
-                    let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                    let _ = platform::open_with_default(&path);
                 }
             });
         }
@@ -570,7 +584,7 @@ impl Workspace {
             action_edit.connect_activate(move |_, _| {
                 let path = ctx_path.borrow().clone();
                 if !path.is_empty() {
-                    open_in_text_editor(&path);
+                    let _ = platform::open_in_editor(&path);
                 }
             });
         }
@@ -583,7 +597,7 @@ impl Workspace {
             action_browser.connect_activate(move |_, _| {
                 let path = ctx_path.borrow().clone();
                 if !path.is_empty() {
-                    open_in_browser(&path);
+                    let _ = platform::open_file_in_browser(&path);
                 }
             });
         }
@@ -616,8 +630,11 @@ impl Workspace {
                 gutter_ctx_line,
                 move |gesture, _n_press, x, y| {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
-                    let (bx, by) = gutter
-                        .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+                    let (bx, by) = gutter.window_to_buffer_coords(
+                        gtk::TextWindowType::Widget,
+                        x as i32,
+                        y as i32,
+                    );
                     if let Some(iter) = gutter.iter_at_location(bx, by) {
                         gutter_ctx_line.set(iter.line() as u32 + 1);
                         gutter_popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
@@ -824,77 +841,7 @@ impl Workspace {
     }
 }
 
-fn open_in_text_editor(path: &str) {
-    for var in &["VISUAL", "EDITOR"] {
-        if let Ok(editor) = std::env::var(var)
-            && std::process::Command::new(&editor)
-                .arg(path)
-                .spawn()
-                .is_ok()
-        {
-            return;
-        }
-    }
-    for editor in &[
-        "gnome-text-editor",
-        "gedit",
-        "kate",
-        "code",
-        "xed",
-        "pluma",
-        "mousepad",
-    ] {
-        if std::process::Command::new(editor)
-            .arg(path)
-            .spawn()
-            .is_ok()
-        {
-            return;
-        }
-    }
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-}
-
-fn open_in_browser(path: &str) {
-    let uri = format!("file://{}", path);
-    // Try $BROWSER first
-    if let Ok(browser) = std::env::var("BROWSER")
-        && std::process::Command::new(&browser)
-            .arg(&uri)
-            .spawn()
-            .is_ok()
-    {
-        return;
-    }
-    // Try xdg-settings to find the default browser
-    if let Ok(out) = std::process::Command::new("xdg-settings")
-        .args(["get", "default-web-browser"])
-        .output()
-    {
-        let desktop = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !desktop.is_empty()
-            && std::process::Command::new("gtk-launch")
-                .arg(&desktop)
-                .arg(&uri)
-                .spawn()
-                .is_ok()
-        {
-            return;
-        }
-    }
-    // Fallback: sensible-browser (Debian/Ubuntu), x-www-browser, then common browsers
-    for browser in &["sensible-browser", "x-www-browser", "google-chrome", "chromium", "chromium-browser", "firefox"] {
-        if std::process::Command::new(browser)
-            .arg(&uri)
-            .spawn()
-            .is_ok()
-        {
-            return;
-        }
-    }
-    // Last resort
-    let _ = std::process::Command::new("xdg-open").arg(&uri).spawn();
-}
+// open_in_text_editor and open_in_browser have moved to services::platform
 
 fn append_path_to_input(input: &gtk::TextView, path: &str) {
     let buffer = input.buffer();
@@ -909,7 +856,7 @@ fn append_path_to_input(input: &gtk::TextView, path: &str) {
 }
 
 fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
-    for _pass in 0..30 {
+    for _pass in 0..TREE_MAX_EXPAND_PASSES {
         let n = selection.n_items();
         let mut expanded_any = false;
         for i in 0..n {

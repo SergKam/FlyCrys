@@ -1,5 +1,6 @@
 mod common;
 use common::HOME_LOCK;
+use flycrys::config::types::Theme;
 use flycrys::session::{self, AppConfig, WorkspaceConfig};
 
 // ──────────────────────────────────────────────────────────────────────
@@ -97,9 +98,15 @@ fn app_config_defaults() {
     let config = AppConfig::default();
     assert_eq!(config.active_tab, 0);
     assert!(config.workspace_ids.is_empty());
-    assert_eq!(config.window_width, 1400);
-    assert_eq!(config.window_height, 800);
-    assert!(!config.is_dark);
+    assert_eq!(
+        config.window_width,
+        flycrys::config::constants::DEFAULT_WINDOW_WIDTH
+    );
+    assert_eq!(
+        config.window_height,
+        flycrys::config::constants::DEFAULT_WINDOW_HEIGHT
+    );
+    assert!(!config.theme.is_dark());
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -113,14 +120,16 @@ fn app_config_serde_roundtrip() {
         workspace_ids: vec!["abc-123".into(), "def-456".into()],
         window_width: 1920,
         window_height: 1080,
-        is_dark: true,
+        window_maximized: false,
+        theme: Theme::Dark,
+        notification_level: Default::default(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let restored: AppConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.active_tab, 2);
     assert_eq!(restored.workspace_ids.len(), 2);
     assert_eq!(restored.window_width, 1920);
-    assert!(restored.is_dark);
+    assert!(restored.theme.is_dark());
 }
 
 #[test]
@@ -158,13 +167,15 @@ fn session_save_load_roundtrip() {
         workspace_ids: vec!["ws-1".into()],
         window_width: 1600,
         window_height: 900,
-        is_dark: true,
+        window_maximized: false,
+        theme: Theme::Dark,
+        notification_level: Default::default(),
     };
     session::save_app_config(&config);
     let loaded = session::load_app_config();
     assert_eq!(loaded.active_tab, 1);
     assert_eq!(loaded.workspace_ids, vec!["ws-1"]);
-    assert!(loaded.is_dark);
+    assert!(loaded.theme.is_dark());
 }
 
 #[test]
@@ -274,14 +285,16 @@ fn full_app_state_restore_flow() {
         workspace_ids: vec![ws1.id.clone(), ws2.id.clone(), ws3.id.clone()],
         window_width: 1920,
         window_height: 1080,
-        is_dark: true,
+        window_maximized: false,
+        theme: Theme::Dark,
+        notification_level: Default::default(),
     };
     session::save_app_config(&app);
 
     // Full restore
     let restored_app = session::load_app_config();
     assert_eq!(restored_app.active_tab, 1);
-    assert!(restored_app.is_dark);
+    assert!(restored_app.theme.is_dark());
 
     let workspaces: Vec<WorkspaceConfig> = restored_app
         .workspace_ids
@@ -326,7 +339,10 @@ fn corrupt_app_config_returns_default() {
     let config = session::load_app_config();
     assert_eq!(config.active_tab, 0);
     assert!(config.workspace_ids.is_empty());
-    assert_eq!(config.window_width, 1400);
+    assert_eq!(
+        config.window_width,
+        flycrys::config::constants::DEFAULT_WINDOW_WIDTH
+    );
 }
 
 #[test]
@@ -372,7 +388,7 @@ fn partial_app_config_fills_defaults() {
     let config = session::load_app_config();
     assert_eq!(config.active_tab, 5);
     assert_eq!(config.workspace_ids, vec!["x"]);
-    assert!(config.is_dark);
+    assert!(config.theme.is_dark());
 }
 
 #[test]
@@ -495,7 +511,9 @@ fn e2e_session_multiple_workspaces() {
         workspace_ids: vec![ws1.id.clone(), ws2.id.clone(), ws3.id.clone()],
         window_width: 1920,
         window_height: 1080,
-        is_dark: false,
+        window_maximized: false,
+        theme: Theme::Light,
+        notification_level: Default::default(),
     };
     session::save_app_config(&config);
 

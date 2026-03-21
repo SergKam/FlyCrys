@@ -1,3 +1,6 @@
+mod event_handler;
+mod state;
+
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -7,50 +10,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::agent_process::{
-    AgentEvent, AgentProcess, AgentSpawnConfig, ImageAttachment, ProcessState,
-};
 use crate::agent_widgets;
-use crate::session::{AgentConfig, ChatMessage};
+use crate::config::constants::{
+    AGENT_PANEL_MIN_WIDTH, AUTO_SCROLL_THRESHOLD, CHAT_BATCH_SIZE, CHAT_TAIL_COUNT,
+    DEFAULT_CONTEXT_WINDOW, INPUT_MAX_HEIGHT,
+};
+use crate::config::types::{NotificationLevel, Theme};
+use crate::models::agent_config::AgentConfig;
+use crate::models::chat::ChatMessage;
+use crate::services::cli::claude::ClaudeBackend;
+use crate::services::cli::{AgentBackend, AgentDomainEvent, AgentSpawnConfig, ImageAttachment};
 
-const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
-
-struct ToolInfo {
-    content_box: gtk::Box,
-    spinner: gtk::Spinner,
-    expander: gtk::Expander,
-    tool_name: String,
-    tool_input: String,
-}
-
-struct PanelState {
-    process: AgentProcess,
-    working_dir: std::path::PathBuf,
-    is_dark: Rc<Cell<bool>>,
-    current_text_label: Option<gtk::Label>,
-    current_text: String,
-    current_tool_name: Option<String>,
-    current_tool_input: String,
-    current_tool_use_id: Option<String>,
-    pending_tools: HashMap<String, ToolInfo>,
-    on_open_file: Rc<dyn Fn(&str)>,
-    thinking_spinner: Option<gtk::Box>,
-    tab_spinner: gtk::Spinner,
-    chat_history: Rc<RefCell<Vec<ChatMessage>>>,
-    agent_configs: Vec<AgentConfig>,
-    selected_profile_idx: usize,
-    session_id: Option<String>,
-    on_session_id_change: Rc<dyn Fn(Option<String>)>,
-    on_profile_change: Rc<dyn Fn(&str)>,
-    on_tool_result: Option<Rc<dyn Fn()>>,
-    notifications_enabled: Rc<Cell<bool>>,
-    // Token & cost tracking
-    context_tokens: u64,
-    context_window_max: u64,
-    total_cost_usd: f64,
-    token_label: gtk::Label,
-    cost_label: gtk::Label,
-}
+use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
 
 struct AttachedImage {
     bytes: Vec<u8>,
@@ -61,8 +32,8 @@ struct AttachedImage {
 #[allow(clippy::too_many_arguments)]
 pub fn create_agent_panel(
     on_open_file: Rc<dyn Fn(&str)>,
-    is_dark: Rc<Cell<bool>>,
-    notifications_enabled: Rc<Cell<bool>>,
+    theme: Rc<Cell<Theme>>,
+    notification_level: Rc<Cell<NotificationLevel>>,
     tab_spinner: gtk::Spinner,
     working_dir: &std::path::Path,
     title_text: &str,
@@ -75,7 +46,7 @@ pub fn create_agent_panel(
     on_tool_result: Option<Rc<dyn Fn()>>,
 ) -> (gtk::Box, gtk::TextView) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    panel.set_width_request(420);
+    panel.set_width_request(AGENT_PANEL_MIN_WIDTH);
 
     // Header
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -127,7 +98,7 @@ pub fn create_agent_panel(
 
         let flag = Rc::clone(&at_bottom);
         adj.connect_value_changed(move |adj| {
-            flag.set(adj.value() >= adj.upper() - adj.page_size() - 20.0);
+            flag.set(adj.value() >= adj.upper() - adj.page_size() - AUTO_SCROLL_THRESHOLD);
         });
 
         let flag = Rc::clone(&at_bottom);
@@ -166,7 +137,7 @@ pub fn create_agent_panel(
     let input_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .max_content_height(120)
+        .max_content_height(INPUT_MAX_HEIGHT)
         .propagate_natural_height(true)
         .child(&input_view)
         .build();
@@ -201,10 +172,9 @@ pub fn create_agent_panel(
 
     // Quick commands drop-up menu
     let quick_menu = gio::Menu::new();
-    quick_menu.append(Some("Commit changes"), Some("panel.quick-commit"));
-    quick_menu.append(Some("Create GitHub PR"), Some("panel.quick-pr"));
-    quick_menu.append(Some("Update documentation"), Some("panel.quick-docs"));
-    quick_menu.append(Some("Run lint, build, tests"), Some("panel.quick-test"));
+    for cmd in crate::config::constants::QUICK_COMMANDS {
+        quick_menu.append(Some(cmd.label), Some(&format!("panel.{}", cmd.action_name)));
+    }
 
     let quick_btn = gtk::MenuButton::new();
     quick_btn.set_icon_name("view-more-symbolic");
@@ -218,7 +188,7 @@ pub fn create_agent_panel(
     spacer.set_hexpand(true);
 
     // Right group: info labels + send
-    let token_label = gtk::Label::new(Some("–"));
+    let token_label = gtk::Label::new(Some("\u{2013}"));
     token_label.set_tooltip_text(Some("Context window usage"));
     token_label.add_css_class("toolbar-info");
 
@@ -252,50 +222,52 @@ pub fn create_agent_panel(
 
     // --- State ---
     let state = Rc::new(RefCell::new(PanelState {
-        process: AgentProcess::new(),
-        working_dir: working_dir.to_path_buf(),
-        is_dark,
-        current_text_label: None,
-        current_text: String::new(),
-        current_tool_name: None,
-        current_tool_input: String::new(),
-        current_tool_use_id: None,
-        pending_tools: HashMap::new(),
-        on_open_file,
-        thinking_spinner: None,
+        process: AgentProcessState {
+            process: ClaudeBackend::new(),
+            session_id: resume_session_id,
+            working_dir: working_dir.to_path_buf(),
+        },
+        tokens: TokenState {
+            context_tokens: 0,
+            context_window_max: DEFAULT_CONTEXT_WINDOW,
+            total_cost_usd: 0.0,
+            token_label: token_label.clone(),
+            cost_label: cost_label.clone(),
+        },
+        chat: ChatState {
+            current_text_label: None,
+            current_text: String::new(),
+            pending_tools: HashMap::new(),
+            thinking_spinner: None,
+            chat_history,
+        },
+        config: PanelConfig {
+            agent_configs,
+            selected_profile_idx: initial_idx,
+            theme,
+            notification_level,
+        },
         tab_spinner,
-        chat_history,
-        agent_configs,
-        selected_profile_idx: initial_idx,
-        session_id: resume_session_id,
+        on_open_file,
         on_session_id_change,
         on_profile_change,
         on_tool_result,
-        notifications_enabled,
-        context_tokens: 0,
-        context_window_max: DEFAULT_CONTEXT_WINDOW,
-        total_cost_usd: 0.0,
-        token_label: token_label.clone(),
-        cost_label: cost_label.clone(),
     }));
 
     // Render restored chat history in two phases:
     // 1. Immediately render the last TAIL_COUNT messages (visible on screen)
     // 2. Prepend older messages in batches via idle callbacks with a spinner
     {
-        const TAIL_COUNT: usize = 20;
-        const BATCH_SIZE: usize = 20;
-
         let state = Rc::clone(&state);
         let message_list = message_list.clone();
         let scrolled = scrolled.clone();
         glib::idle_add_local_once(move || {
             let s = state.borrow();
-            let history = s.chat_history.borrow();
+            let history = s.chat.chat_history.borrow();
             let on_open = s.on_open_file.clone();
-            let dark = s.is_dark.get();
+            let dark = s.config.theme.get().is_dark();
             let total = history.len();
-            let tail_start = total.saturating_sub(TAIL_COUNT);
+            let tail_start = total.saturating_sub(CHAT_TAIL_COUNT);
 
             // Phase 1: render the tail (last N messages) immediately
             for msg in &history[tail_start..] {
@@ -314,7 +286,7 @@ pub fn create_agent_panel(
                 // Snapshot the older slice for batch processing
                 let state2 = Rc::clone(&state);
                 let older: Vec<ChatMessage> =
-                    state2.borrow().chat_history.borrow()[..tail_start].to_vec();
+                    state2.borrow().chat.chat_history.borrow()[..tail_start].to_vec();
                 // Cursor walks backwards from the end of the older slice
                 let cursor = Rc::new(Cell::new(older.len()));
 
@@ -323,7 +295,7 @@ pub fn create_agent_panel(
                 glib::idle_add_local(move || {
                     let s = state2.borrow();
                     let on_open = s.on_open_file.clone();
-                    let dark = s.is_dark.get();
+                    let dark = s.config.theme.get().is_dark();
                     drop(s);
 
                     let cur = cursor.get();
@@ -333,16 +305,13 @@ pub fn create_agent_panel(
                         return glib::ControlFlow::Break;
                     }
 
-                    let batch_start = cur.saturating_sub(BATCH_SIZE);
+                    let batch_start = cur.saturating_sub(CHAT_BATCH_SIZE);
                     // Insert each message after the previous one so the batch
                     // appears in chronological order below the spinner.
-                    let mut insert_after: Option<gtk::Widget> =
-                        Some(loading.clone().upcast());
+                    let mut insert_after: Option<gtk::Widget> = Some(loading.clone().upcast());
                     for msg in &older[batch_start..cur] {
-                        let widget =
-                            render_chat_message_widget(msg, &on_open, dark);
-                        message_list2
-                            .insert_child_after(&widget, insert_after.as_ref());
+                        let widget = render_chat_message_widget(msg, &on_open, dark);
+                        message_list2.insert_child_after(&widget, insert_after.as_ref());
                         insert_after = Some(widget);
                     }
                     cursor.set(batch_start);
@@ -362,11 +331,11 @@ pub fn create_agent_panel(
         dropdown.connect_selected_notify(move |dd| {
             let idx = dd.selected() as usize;
             let mut s = state.borrow_mut();
-            s.selected_profile_idx = idx;
+            s.config.selected_profile_idx = idx;
             // Clear session_id when profile changes (new conversation)
-            s.session_id = None;
+            s.process.session_id = None;
             (s.on_session_id_change)(None);
-            if let Some(cfg) = s.agent_configs.get(idx) {
+            if let Some(cfg) = s.config.agent_configs.get(idx) {
                 (s.on_profile_change)(&cfg.name);
             }
         });
@@ -391,8 +360,9 @@ pub fn create_agent_panel(
                 // Find the currently selected profile in the new list
                 let mut s = state_clone.borrow_mut();
                 let current_name = s
+                    .config
                     .agent_configs
-                    .get(s.selected_profile_idx)
+                    .get(s.config.selected_profile_idx)
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
                 let new_idx = new_configs
@@ -400,8 +370,8 @@ pub fn create_agent_panel(
                     .position(|c| c.name == current_name)
                     .unwrap_or(0);
 
-                s.agent_configs = new_configs;
-                s.selected_profile_idx = new_idx;
+                s.config.agent_configs = new_configs;
+                s.config.selected_profile_idx = new_idx;
                 dropdown_clone.set_selected(new_idx as u32);
             });
         });
@@ -414,10 +384,9 @@ pub fn create_agent_panel(
         attach_btn.connect_clicked(move |btn| {
             let filter = gtk::FileFilter::new();
             filter.set_name(Some("Images"));
-            filter.add_mime_type("image/png");
-            filter.add_mime_type("image/jpeg");
-            filter.add_mime_type("image/gif");
-            filter.add_mime_type("image/webp");
+            for mime in crate::config::constants::SUPPORTED_IMAGE_MIME {
+                filter.add_mime_type(mime);
+            }
 
             let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
             filters.append(&filter);
@@ -501,6 +470,7 @@ pub fn create_agent_panel(
             if !text.is_empty() {
                 state
                     .borrow()
+                    .chat
                     .chat_history
                     .borrow_mut()
                     .push(ChatMessage::User { text: text.clone() });
@@ -517,23 +487,23 @@ pub fn create_agent_panel(
 
             let mut s = state.borrow_mut();
 
-            if !s.process.is_alive() {
+            if !s.process.process.is_alive() {
                 // Spawn new process with selected agent profile
-                let (sender, receiver) = mpsc::channel::<AgentEvent>();
+                let (sender, receiver) = mpsc::channel::<AgentDomainEvent>();
                 let receiver = Rc::new(RefCell::new(Some(receiver)));
 
                 let spawn_config = {
-                    let cfg = s.agent_configs.get(s.selected_profile_idx);
+                    let cfg = s.config.agent_configs.get(s.config.selected_profile_idx);
                     AgentSpawnConfig {
                         system_prompt: cfg.map(|c| c.system_prompt.clone()),
                         allowed_tools: cfg.map(|c| c.allowed_tools.clone()).unwrap_or_default(),
                         model: cfg.and_then(|c| c.model.clone()),
-                        resume_session_id: s.session_id.clone(),
+                        resume_session_id: s.process.session_id.clone(),
                     }
                 };
 
-                let wd = s.working_dir.clone();
-                if let Err(err_msg) = s.process.spawn(sender, &wd, &spawn_config) {
+                let wd = s.process.working_dir.clone();
+                if let Err(err_msg) = s.process.process.spawn(sender, &wd, &spawn_config) {
                     let err = agent_widgets::create_system_message(&format!(
                         "Failed to start claude CLI: {err_msg}"
                     ));
@@ -555,7 +525,7 @@ pub fn create_agent_panel(
                         return glib::ControlFlow::Break;
                     };
                     while let Ok(event) = rx.try_recv() {
-                        handle_event(
+                        event_handler::handle_domain_event(
                             &state_rx,
                             &ml,
                             &sc,
@@ -569,13 +539,13 @@ pub fn create_agent_panel(
                 });
             }
 
-            s.process.send_message(&text, &api_images);
+            let _ = s.process.process.send_message(&text, &api_images);
 
             // Show thinking spinner
             let thinking = agent_widgets::create_thinking_spinner();
             message_list.append(&thinking);
             scroll_to_bottom(&scrolled);
-            s.thinking_spinner = Some(thinking);
+            s.chat.thinking_spinner = Some(thinking);
             s.tab_spinner.set_spinning(true);
             drop(s);
 
@@ -633,18 +603,14 @@ pub fn create_agent_panel(
         let state = Rc::clone(&state);
         pause_btn.connect_clicked(move |btn| {
             let mut s = state.borrow_mut();
-            match s.process.state {
-                ProcessState::Running => {
-                    s.process.pause();
-                    btn.set_icon_name("media-playback-start-symbolic");
-                    btn.set_tooltip_text(Some("Resume"));
-                }
-                ProcessState::Paused => {
-                    s.process.resume();
-                    btn.set_icon_name("media-playback-pause-symbolic");
-                    btn.set_tooltip_text(Some("Pause"));
-                }
-                _ => {}
+            if s.process.process.is_running() {
+                s.process.process.pause();
+                btn.set_icon_name("media-playback-start-symbolic");
+                btn.set_tooltip_text(Some("Resume"));
+            } else if s.process.process.is_paused() {
+                s.process.process.resume();
+                btn.set_icon_name("media-playback-pause-symbolic");
+                btn.set_tooltip_text(Some("Pause"));
             }
         });
     }
@@ -658,14 +624,14 @@ pub fn create_agent_panel(
         let message_list = message_list.clone();
         stop_btn_clone.connect_clicked(move |btn| {
             let mut s = state.borrow_mut();
-            s.process.stop();
-            remove_thinking_spinner(&mut s);
+            s.process.process.stop();
+            event_handler::remove_thinking_spinner(&mut s);
             s.tab_spinner.set_spinning(false);
-            s.chat_history.borrow_mut().push(ChatMessage::System {
-                text: "⏹ Stopped".to_string(),
+            s.chat.chat_history.borrow_mut().push(ChatMessage::System {
+                text: "\u{23f9} Stopped".to_string(),
             });
             drop(s);
-            let info = agent_widgets::create_system_message("⏹ Stopped");
+            let info = agent_widgets::create_system_message("\u{23f9} Stopped");
             message_list.append(&info);
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
@@ -688,23 +654,11 @@ pub fn create_agent_panel(
     // Quick command actions
     {
         let action_group = gio::SimpleActionGroup::new();
-        let commands: &[(&str, &str)] = &[
-            (
-                "quick-commit",
-                "commit all changes with a meaningful message",
-            ),
-            ("quick-pr", "create a pull request for current branch"),
-            (
-                "quick-docs",
-                "update documentation to reflect recent changes",
-            ),
-            ("quick-test", "run lint, build, and tests, fix any errors"),
-        ];
-        for (action_name, prompt_text) in commands {
-            let action = gio::SimpleAction::new(action_name, None);
+        for cmd in crate::config::constants::QUICK_COMMANDS {
+            let action = gio::SimpleAction::new(cmd.action_name, None);
             let iv = input_view.clone();
             let ds = do_send.clone();
-            let text = prompt_text.to_string();
+            let text = cmd.prompt.to_string();
             action.connect_activate(move |_, _| {
                 iv.buffer().set_text(&text);
                 ds();
@@ -716,6 +670,10 @@ pub fn create_agent_panel(
 
     (panel, input_view)
 }
+
+// ---------------------------------------------------------------------------
+// Helper functions shared across sub-modules
+// ---------------------------------------------------------------------------
 
 fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar: &gtk::Box) {
     while let Some(child) = attach_bar.first_child() {
@@ -769,387 +727,6 @@ fn mime_for_path(path: &std::path::Path) -> String {
         _ => "image/png",
     }
     .to_string()
-}
-
-fn handle_event(
-    state: &Rc<RefCell<PanelState>>,
-    message_list: &gtk::Box,
-    scrolled: &gtk::ScrolledWindow,
-    send_btn: &gtk::Button,
-    pause_btn: &gtk::Button,
-    stop_btn: &gtk::Button,
-    event: AgentEvent,
-) {
-    match event {
-        AgentEvent::System {
-            session_id, model, ..
-        } => {
-            let mut s = state.borrow_mut();
-            // Capture session_id for continuation
-            if let Some(ref id) = session_id {
-                s.session_id = Some(id.clone());
-                (s.on_session_id_change)(Some(id.clone()));
-            }
-            // Parse context window from model name (e.g., "claude-opus-4-6[1m]")
-            if let Some(ref model_name) = model
-                && let Some(ctx) = parse_context_window(model_name)
-            {
-                s.context_window_max = ctx;
-            }
-        }
-
-        AgentEvent::StreamEvent { event: ev } => {
-            handle_stream_event(state, message_list, scrolled, &ev);
-        }
-
-        AgentEvent::User {
-            tool_use_result: Some(_),
-            ref message,
-            ..
-        } => {
-            // The actual tool output lives in message.content[0], not in tool_use_result
-            // (tool_use_result has a different, variable shape from the CLI).
-            let first = message
-                .get("content")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first());
-
-            let tool_id = first
-                .and_then(|item| item.get("tool_use_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let output = first
-                .and_then(|item| item.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let is_error = first
-                .and_then(|item| item.get("is_error"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            let mut s = state.borrow_mut();
-            if let Some(info) = s.pending_tools.remove(&tool_id) {
-                agent_widgets::fill_tool_result(
-                    &info.content_box,
-                    &info.spinner,
-                    &info.expander,
-                    output,
-                    is_error,
-                    &info.tool_name,
-                    &info.tool_input,
-                );
-                // Record in history
-                s.chat_history.borrow_mut().push(ChatMessage::ToolCall {
-                    tool_name: info.tool_name.clone(),
-                    tool_input: info.tool_input.clone(),
-                    output: output.to_string(),
-                    is_error,
-                });
-            }
-            if let Some(ref cb) = s.on_tool_result {
-                cb();
-            }
-            scroll_to_bottom(scrolled);
-        }
-
-        AgentEvent::Result {
-            result,
-            total_cost_usd,
-            is_error,
-            model_usage,
-            ..
-        } => {
-            // Only show a system message for errors (cost is already in the toolbar)
-            if is_error {
-                let msg = match result {
-                    Some(ref detail) if !detail.is_empty() => format!("✗ Error: {detail}"),
-                    _ => "✗ Error (no details available)".to_string(),
-                };
-                let info = agent_widgets::create_system_message(&msg);
-                message_list.append(&info);
-            }
-
-            send_btn.set_sensitive(true);
-            pause_btn.set_sensitive(false);
-            pause_btn.set_icon_name("media-playback-pause-symbolic");
-            pause_btn.set_tooltip_text(Some("Pause"));
-            stop_btn.set_sensitive(false);
-
-            let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
-            s.tab_spinner.set_spinning(false);
-
-            // Update cost display
-            s.total_cost_usd = total_cost_usd;
-            s.cost_label.set_text(&format!("${:.2}", total_cost_usd));
-
-            // Extract context window size from modelUsage (most accurate source)
-            if let Some(ref mu) = model_usage
-                && let Some(obj) = mu.as_object()
-            {
-                for (_model_name, info) in obj {
-                    if let Some(ctx) = info.get("contextWindow").and_then(|v| v.as_u64())
-                        && ctx > 0
-                    {
-                        s.context_window_max = ctx;
-                        // Recalculate percentage with correct window
-                        let pct = (s.context_tokens as f64 / ctx as f64 * 100.0) as u32;
-                        s.token_label.set_text(&format!(
-                            "{} ({}%)",
-                            format_token_count(s.context_tokens),
-                            pct
-                        ));
-                    }
-                }
-            }
-
-            // Stop any tool spinners that never received a result
-            let orphaned: Vec<ToolInfo> = s.pending_tools.drain().map(|(_, v)| v).collect();
-            for ti in &orphaned {
-                ti.spinner.set_spinning(false);
-                ti.spinner.set_visible(false);
-            }
-            {
-                let mut hist = s.chat_history.borrow_mut();
-                for ti in orphaned {
-                    hist.push(ChatMessage::ToolCall {
-                        tool_name: ti.tool_name,
-                        tool_input: ti.tool_input,
-                        output: String::new(),
-                        is_error: false,
-                    });
-                }
-                if is_error {
-                    let err_msg = match result {
-                        Some(ref detail) if !detail.is_empty() => {
-                            format!("✗ Error: {detail}")
-                        }
-                        _ => "✗ Error (no details available)".to_string(),
-                    };
-                    hist.push(ChatMessage::System { text: err_msg });
-                }
-            }
-            s.current_text_label = None;
-            s.current_text.clear();
-            s.process.state = ProcessState::Idle;
-
-            // Desktop notification
-            if s.notifications_enabled.get()
-                && let Some(app) = gio::Application::default()
-            {
-                let dir_name = s
-                    .working_dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let notification = gio::Notification::new("FlyCrys");
-                if is_error {
-                    notification.set_body(Some(&format!("Agent error in {dir_name}")));
-                } else {
-                    notification.set_body(Some(&format!("Agent finished in {dir_name}")));
-                }
-                app.send_notification(None, &notification);
-            }
-
-            if let Some(ref cb) = s.on_tool_result {
-                cb();
-            }
-
-            scroll_to_bottom(scrolled);
-        }
-
-        AgentEvent::ProcessError { message } => {
-            let label = agent_widgets::create_system_message(&format!("⚠ {message}"));
-            label.add_css_class("error-text");
-            message_list.append(&label);
-            scroll_to_bottom(scrolled);
-        }
-
-        _ => {}
-    }
-}
-
-fn remove_thinking_spinner(state: &mut PanelState) {
-    if let Some(spinner) = state.thinking_spinner.take()
-        && let Some(parent) = spinner.parent()
-        && let Some(parent_box) = parent.downcast_ref::<gtk::Box>()
-    {
-        parent_box.remove(&spinner);
-    }
-}
-
-fn handle_stream_event(
-    state: &Rc<RefCell<PanelState>>,
-    message_list: &gtk::Box,
-    scrolled: &gtk::ScrolledWindow,
-    ev: &crate::agent_process::StreamEventData,
-) {
-    match ev.event_type.as_str() {
-        "message_start" => {
-            // Extract total context usage from message.usage
-            // Real context = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-            if let Some(ref msg) = ev.message
-                && let Some(usage) = msg.get("usage")
-            {
-                let input = usage
-                    .get("input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let cache_create = usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let cache_read = usage
-                    .get("cache_read_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let total_input = input + cache_create + cache_read;
-                let mut s = state.borrow_mut();
-                s.context_tokens = total_input;
-                let pct = (total_input as f64 / s.context_window_max as f64 * 100.0) as u32;
-                s.token_label
-                    .set_text(&format!("{} ({}%)", format_token_count(total_input), pct));
-            }
-        }
-
-        "message_delta" => {
-            // Update token display: total context = all input types + output tokens
-            if let Some(ref usage) = ev.usage {
-                let total_input = usage.input_tokens
-                    + usage.cache_creation_input_tokens
-                    + usage.cache_read_input_tokens;
-                let total = total_input + usage.output_tokens;
-                let s = state.borrow();
-                // Update stored context_tokens if we got better data
-                // (can't mutate here easily, but message_start already set it)
-                let pct = (total as f64 / s.context_window_max as f64 * 100.0) as u32;
-                s.token_label
-                    .set_text(&format!("{} ({}%)", format_token_count(total), pct));
-            }
-        }
-
-        "content_block_start" => {
-            let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
-            if let Some(ref cb) = ev.content_block {
-                match cb.block_type.as_str() {
-                    "text" => {
-                        let (container, label) = agent_widgets::create_assistant_text();
-                        let cb = s.on_open_file.clone();
-                        label.connect_activate_link(move |_label, uri| {
-                            if let Some(path) = uri.strip_prefix("file://") {
-                                cb(path);
-                                glib::Propagation::Stop
-                            } else {
-                                glib::Propagation::Proceed
-                            }
-                        });
-                        message_list.append(&container);
-                        s.current_text_label = Some(label);
-                        s.current_text.clear();
-                    }
-                    "tool_use" => {
-                        let name = cb.name.as_deref().unwrap_or("Tool");
-                        s.current_tool_name = Some(name.to_string());
-                        s.current_tool_input.clear();
-                        s.current_tool_use_id = cb.id.clone();
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        "content_block_delta" => {
-            let mut s = state.borrow_mut();
-            if let Some(ref delta) = ev.delta {
-                match delta.delta_type.as_deref() {
-                    Some("text_delta") => {
-                        if let Some(ref text) = delta.text {
-                            s.current_text.push_str(text);
-                            if let Some(ref label) = s.current_text_label {
-                                agent_widgets::update_assistant_text(
-                                    label,
-                                    &s.current_text,
-                                    s.is_dark.get(),
-                                );
-                            }
-                        }
-                    }
-                    Some("input_json_delta") => {
-                        if let Some(ref json) = delta.partial_json {
-                            s.current_tool_input.push_str(json);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            drop(s);
-            scroll_to_bottom(scrolled);
-        }
-
-        "content_block_stop" => {
-            let mut s = state.borrow_mut();
-            // If we were building a tool call, finalize it
-            if let Some(tool_name) = s.current_tool_name.take() {
-                let input_text = extract_tool_display(&tool_name, &s.current_tool_input);
-                let file_path = extract_file_path(&s.current_tool_input);
-                let on_open = s.on_open_file.clone();
-                let (container, content_box, spinner, expander) = agent_widgets::create_tool_call(
-                    &tool_name,
-                    &input_text,
-                    file_path.as_deref(),
-                    on_open,
-                );
-                message_list.append(&container);
-
-                let tool_input_snapshot = s.current_tool_input.clone();
-                if let Some(id) = s.current_tool_use_id.take() {
-                    s.pending_tools.insert(
-                        id,
-                        ToolInfo {
-                            content_box,
-                            spinner,
-                            expander,
-                            tool_name,
-                            tool_input: tool_input_snapshot,
-                        },
-                    );
-                }
-                s.current_tool_input.clear();
-            } else if !s.current_text.is_empty() {
-                // Text block completed — record in history
-                s.chat_history
-                    .borrow_mut()
-                    .push(ChatMessage::AssistantText {
-                        text: s.current_text.clone(),
-                    });
-            }
-            // Clear text tracking (block is done)
-            s.current_text_label = None;
-            s.current_text.clear();
-            drop(s);
-            scroll_to_bottom(scrolled);
-        }
-
-        _ => {}
-    }
-}
-
-/// Parse context window size from model name (e.g., "claude-opus-4-6[1m]" → 1_000_000)
-fn parse_context_window(model: &str) -> Option<u64> {
-    let start = model.find('[')?;
-    let end = model.find(']')?;
-    let spec = model[start + 1..end].to_lowercase();
-    if let Some(num_str) = spec.strip_suffix('m') {
-        num_str.parse::<u64>().ok().map(|n| n * 1_000_000)
-    } else if let Some(num_str) = spec.strip_suffix('k') {
-        num_str.parse::<u64>().ok().map(|n| n * 1_000)
-    } else {
-        None
-    }
 }
 
 /// Format token count as human-readable string (e.g., "25K", "1.2M", "500")

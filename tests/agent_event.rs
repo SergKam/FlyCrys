@@ -1,4 +1,4 @@
-use flycrys::agent_process::AgentEvent;
+use flycrys::services::cli::claude::ClaudeEvent as AgentEvent;
 
 // ──────────────────────────────────────────────────────────────────────
 // AgentEvent: JSON deserialization

@@ -2,6 +2,11 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use std::rc::Rc;
 
+use crate::config::constants::{
+    DISPLAY_TRUNCATE_AT, DISPLAY_TRUNCATE_KEEP, IMAGE_THUMBNAIL_HEIGHT, IMAGE_THUMBNAIL_WIDTH,
+    OUTPUT_COLLAPSE_THRESHOLD, OUTPUT_HEAD_TAIL_LINES,
+};
+
 /// User message bubble (right-aligned)
 pub fn create_user_message(text: &str) -> gtk::Box {
     let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -87,9 +92,9 @@ pub fn create_tool_call(
         let name_label = gtk::Label::new(Some(&format!("{tool_name}(")));
         header.append(&name_label);
 
-        let short_path = if path.len() > 60 {
-            let truncated: String = path.chars().take(57).collect();
-            format!("{truncated}…")
+        let short_path = if path.len() > DISPLAY_TRUNCATE_AT {
+            let truncated: String = path.chars().take(DISPLAY_TRUNCATE_KEEP).collect();
+            format!("{truncated}\u{2026}")
         } else {
             path.to_string()
         };
@@ -116,8 +121,8 @@ pub fn create_tool_call(
         let close_label = gtk::Label::new(Some(")"));
         header.append(&close_label);
     } else {
-        let short = if tool_input_hint.len() > 60 {
-            format!("{}…", &tool_input_hint[..57])
+        let short = if tool_input_hint.len() > DISPLAY_TRUNCATE_AT {
+            format!("{}\u{2026}", &tool_input_hint[..DISPLAY_TRUNCATE_KEEP])
         } else {
             tool_input_hint.to_string()
         };
@@ -181,19 +186,19 @@ pub fn fill_tool_result(
         return;
     }
 
-    let text = if output.len() > 2000 {
+    let text = if output.len() > OUTPUT_COLLAPSE_THRESHOLD {
         let lines: Vec<&str> = output.lines().collect();
-        if lines.len() > 10 {
-            let head: Vec<&str> = lines[..5].to_vec();
-            let tail: Vec<&str> = lines[lines.len() - 5..].to_vec();
+        if lines.len() > OUTPUT_HEAD_TAIL_LINES * 2 {
+            let head: Vec<&str> = lines[..OUTPUT_HEAD_TAIL_LINES].to_vec();
+            let tail: Vec<&str> = lines[lines.len() - OUTPUT_HEAD_TAIL_LINES..].to_vec();
             format!(
-                "{}\n  … +{} lines …\n{}",
+                "{}\n  \u{2026} +{} lines \u{2026}\n{}",
                 head.join("\n"),
-                lines.len() - 10,
+                lines.len() - OUTPUT_HEAD_TAIL_LINES * 2,
                 tail.join("\n"),
             )
         } else {
-            output[..2000].to_string() + "…"
+            output[..OUTPUT_COLLAPSE_THRESHOLD].to_string() + "\u{2026}"
         }
     } else {
         output.to_string()
@@ -248,7 +253,7 @@ pub fn create_user_message_with_images(text: &str, textures: &[gtk::gdk::Texture
         let picture = gtk::Picture::for_paintable(texture);
         picture.set_content_fit(gtk::ContentFit::Contain);
         let thumb = gtk::Frame::new(None);
-        thumb.set_size_request(160, 120);
+        thumb.set_size_request(IMAGE_THUMBNAIL_WIDTH, IMAGE_THUMBNAIL_HEIGHT);
         thumb.set_overflow(gtk::Overflow::Hidden);
         thumb.set_child(Some(&picture));
         thumb.add_css_class("image-thumb");

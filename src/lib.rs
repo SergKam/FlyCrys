@@ -1,6 +1,9 @@
+pub mod config;
+pub mod models;
+pub mod services;
+pub mod ui;
+
 pub mod agent_config_dialog;
-pub mod agent_panel;
-pub mod agent_process;
 pub mod agent_widgets;
 pub mod file_entry;
 pub mod git_panel;
