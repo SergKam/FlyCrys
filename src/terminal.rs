@@ -1,5 +1,6 @@
 use gtk::glib;
 use gtk4 as gtk;
+use std::path::Path;
 use vte4::prelude::*;
 
 use crate::config::constants::{DEFAULT_SHELL, TERMINAL_FONT, TERMINAL_SCROLLBACK_LINES};
@@ -61,4 +62,46 @@ pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
         None::<&gtk::gio::Cancellable>,
         |_result| {},
     );
+}
+
+/// Save terminal scrollback content to a file (plain text).
+pub fn save_scrollback(terminal: &vte4::Terminal, path: &Path) {
+    let file = match gtk::gio::File::for_path(path).replace(
+        None,
+        false,
+        gtk::gio::FileCreateFlags::REPLACE_DESTINATION,
+        None::<&gtk::gio::Cancellable>,
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            eprintln!("flycrys: failed to create terminal save file: {e}");
+            return;
+        }
+    };
+    if let Err(e) = terminal.write_contents_sync(
+        &file,
+        vte4::WriteFlags::Default,
+        None::<&gtk::gio::Cancellable>,
+    ) {
+        eprintln!("flycrys: failed to save terminal content: {e}");
+    }
+}
+
+/// Restore previously saved terminal scrollback content.
+/// Feeds the text into the terminal display before the shell is spawned,
+/// giving visual continuity of previous output.
+pub fn restore_scrollback(terminal: &vte4::Terminal, path: &Path) {
+    if let Ok(content) = std::fs::read(path)
+        && !content.is_empty()
+    {
+        // Strip trailing blank lines to keep things clean
+        let text = String::from_utf8_lossy(&content);
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            // Feed as terminal output (rendered, not sent to shell)
+            terminal.feed(trimmed.as_bytes());
+            // Add a newline separator before the fresh shell prompt
+            terminal.feed(b"\r\n");
+        }
+    }
 }

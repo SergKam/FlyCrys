@@ -22,3 +22,4 @@ pub use crate::services::storage::save_agent_config;
 pub use crate::services::storage::save_app_config;
 pub use crate::services::storage::save_chat_history;
 pub use crate::services::storage::save_workspace_config;
+pub use crate::services::storage::terminal_content_path;

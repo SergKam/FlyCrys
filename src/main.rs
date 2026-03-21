@@ -9,6 +9,7 @@ use flycrys::config::constants::AUTOSAVE_INTERVAL_SECS;
 use flycrys::config::theme::css_for_theme;
 use flycrys::config::types::{NotificationLevel, Theme};
 use flycrys::session::{self, AppConfig, WorkspaceConfig};
+use flycrys::terminal;
 use flycrys::workspace::Workspace;
 
 const APP_ID: &str = "com.flycrys.app";
@@ -129,6 +130,11 @@ impl TabSlot {
         if let Some(ref ws) = self.workspace {
             session::save_workspace_config(&ws.config.borrow());
             session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
+            // Save terminal scrollback if terminal was visible
+            if ws.config.borrow().terminal_visible {
+                let term_path = session::terminal_content_path(&ws.config.borrow().id);
+                terminal::save_scrollback(&ws.vte_terminal, &term_path);
+            }
         } else if let Some(ref config) = self.pending_config {
             // Never visited — config is unchanged on disk, save for consistency
             session::save_workspace_config(config);
