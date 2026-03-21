@@ -64,27 +64,33 @@ pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
     );
 }
 
-/// Save terminal scrollback content to a file (plain text).
+/// Save terminal scrollback content to a file (plain text, non-blocking).
+///
+/// Captures the scrollback into memory (fast, on main thread), then
+/// writes to disk on a background thread so the terminal is never paused.
 pub fn save_scrollback(terminal: &vte4::Terminal, path: &Path) {
-    let file = match gtk::gio::File::for_path(path).replace(
-        None,
-        false,
-        gtk::gio::FileCreateFlags::REPLACE_DESTINATION,
-        None::<&gtk::gio::Cancellable>,
-    ) {
-        Ok(stream) => stream,
-        Err(e) => {
-            eprintln!("flycrys: failed to create terminal save file: {e}");
-            return;
-        }
-    };
+    // Step 1: capture scrollback into memory (microseconds)
+    let mem_stream = gtk::gio::MemoryOutputStream::new_resizable();
     if let Err(e) = terminal.write_contents_sync(
-        &file,
+        &mem_stream,
         vte4::WriteFlags::Default,
         None::<&gtk::gio::Cancellable>,
     ) {
-        eprintln!("flycrys: failed to save terminal content: {e}");
+        eprintln!("flycrys: failed to capture terminal content: {e}");
+        return;
     }
+    if mem_stream.close(None::<&gtk::gio::Cancellable>).is_err() {
+        return;
+    }
+    let bytes = mem_stream.steal_as_bytes();
+
+    // Step 2: write to disk on a background thread
+    let file_path = path.to_path_buf();
+    std::thread::spawn(move || {
+        if let Err(e) = std::fs::write(&file_path, &bytes) {
+            eprintln!("flycrys: failed to write terminal save file: {e}");
+        }
+    });
 }
 
 /// Restore previously saved terminal scrollback content.
