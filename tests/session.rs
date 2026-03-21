@@ -160,7 +160,7 @@ fn session_save_load_roundtrip() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let config = AppConfig {
         active_tab: 1,
@@ -183,7 +183,7 @@ fn workspace_save_load_roundtrip() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let mut ws = WorkspaceConfig::new("/home/user/myproject");
     ws.open_file = Some("/home/user/myproject/lib.rs".into());
@@ -202,7 +202,7 @@ fn workspace_delete() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let ws = WorkspaceConfig::new("/tmp/test");
     session::save_workspace_config(&ws);
@@ -217,7 +217,7 @@ fn load_nonexistent_workspace() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     assert!(session::load_workspace_config("does-not-exist").is_none());
 }
@@ -227,7 +227,7 @@ fn load_missing_app_config_returns_default() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let config = session::load_app_config();
     assert_eq!(config.active_tab, 0);
@@ -242,7 +242,7 @@ fn load_missing_app_config_returns_default() {
 fn workspace_references_agent_profiles() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     session::ensure_default_agents();
 
@@ -264,7 +264,7 @@ fn workspace_references_agent_profiles() {
 fn full_app_state_restore_flow() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     session::ensure_default_agents();
 
@@ -329,7 +329,7 @@ fn full_app_state_restore_flow() {
 fn corrupt_app_config_returns_default() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     // Write garbage to config file
     let dir = tmp.path().join(".config").join("flycrys");
@@ -349,7 +349,7 @@ fn corrupt_app_config_returns_default() {
 fn corrupt_workspace_config_returns_none() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let dir = tmp.path().join(".config").join("flycrys").join("sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -362,7 +362,7 @@ fn corrupt_workspace_config_returns_none() {
 fn corrupt_agent_config_returns_none() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let dir = tmp.path().join(".config").join("flycrys").join("agents");
     std::fs::create_dir_all(&dir).unwrap();
@@ -375,7 +375,7 @@ fn corrupt_agent_config_returns_none() {
 fn partial_app_config_fills_defaults() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let dir = tmp.path().join(".config").join("flycrys");
     std::fs::create_dir_all(&dir).unwrap();
@@ -395,7 +395,7 @@ fn partial_app_config_fills_defaults() {
 fn workspace_config_missing_optional_fields_uses_defaults() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let dir = tmp.path().join(".config").join("flycrys").join("sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -428,7 +428,7 @@ fn workspace_config_missing_optional_fields_uses_defaults() {
 fn many_workspaces_create_and_selective_delete() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let mut ids = Vec::new();
     for i in 0..10 {
@@ -458,7 +458,7 @@ fn many_workspaces_create_and_selective_delete() {
 fn workspace_config_update_preserves_id() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let mut ws = WorkspaceConfig::new("/home/user/project");
     let original_id = ws.id.clone();
@@ -495,7 +495,7 @@ fn e2e_session_multiple_workspaces() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // SAFETY: guarded by HOME_LOCK so no parallel mutation
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     // Create and save multiple workspaces
     let ws1 = WorkspaceConfig::new("/home/user/project-a");

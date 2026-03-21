@@ -10,7 +10,7 @@ use flycrys::session;
 fn agent_config_save_load_roundtrip() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let config = session::AgentConfig {
         name: "TestAgent".to_string(),
@@ -31,7 +31,7 @@ fn agent_config_save_load_roundtrip() {
 fn agent_config_case_insensitive_path() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let config = session::AgentConfig {
         name: "MyAgent".to_string(),
@@ -50,7 +50,7 @@ fn agent_config_case_insensitive_path() {
 fn agent_config_nonexistent_returns_none() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     assert!(session::load_agent_config("NoSuchAgent").is_none());
 }
@@ -59,7 +59,7 @@ fn agent_config_nonexistent_returns_none() {
 fn ensure_default_agents_creates_three_profiles() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     session::ensure_default_agents();
 
@@ -76,7 +76,7 @@ fn ensure_default_agents_creates_three_profiles() {
 fn ensure_default_agents_idempotent() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     session::ensure_default_agents();
     // Modify one agent
@@ -95,7 +95,7 @@ fn ensure_default_agents_idempotent() {
 fn list_agent_configs_sorted_alphabetically() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     for name in ["Zeta", "Alpha", "Middle"] {
         session::save_agent_config(&session::AgentConfig {
@@ -115,7 +115,7 @@ fn list_agent_configs_sorted_alphabetically() {
 fn agent_config_overwrite_updates_fields() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let v1 = session::AgentConfig {
         name: "Evolving".to_string(),
@@ -163,7 +163,7 @@ fn agent_config_empty_tools_and_no_model() {
 fn agent_config_with_unicode_prompt() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let config = session::AgentConfig {
         name: "Unicode".to_string(),

@@ -10,7 +10,7 @@ use flycrys::session::{self, ChatMessage, WorkspaceConfig};
 fn chat_history_save_load_roundtrip() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let messages = vec![
         ChatMessage::User {
@@ -81,7 +81,7 @@ fn chat_history_save_load_roundtrip() {
 fn chat_history_empty_workspace_returns_empty() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let loaded = session::load_chat_history("nonexistent-ws");
     assert!(loaded.is_empty());
@@ -91,7 +91,7 @@ fn chat_history_empty_workspace_returns_empty() {
 fn chat_history_delete() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let messages = vec![ChatMessage::User {
         text: "test".to_string(),
@@ -107,7 +107,7 @@ fn chat_history_delete() {
 fn chat_history_overwrite() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let v1 = vec![ChatMessage::User {
         text: "first".to_string(),
@@ -135,7 +135,7 @@ fn chat_history_overwrite() {
 fn chat_history_corrupt_json_returns_empty() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let dir = tmp.path().join(".config").join("flycrys").join("sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -149,7 +149,7 @@ fn chat_history_corrupt_json_returns_empty() {
 fn chat_history_tool_call_with_error() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let messages = vec![ChatMessage::ToolCall {
         tool_name: "Bash".to_string(),
@@ -175,7 +175,7 @@ fn chat_history_tool_call_with_error() {
 fn chat_history_save_empty_clears_file() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let messages = vec![ChatMessage::User {
         text: "hello".to_string(),
@@ -224,7 +224,7 @@ fn chat_history_serde_roundtrip_all_variants() {
 fn chat_history_with_unicode() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let messages = vec![
         ChatMessage::User {
@@ -251,7 +251,7 @@ fn chat_history_with_unicode() {
 fn chat_history_large_tool_output() {
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let large_output = "x".repeat(100_000);
     let messages = vec![ChatMessage::ToolCall {
@@ -274,7 +274,7 @@ fn chat_history_workspace_lifecycle() {
     // Full lifecycle: create workspace -> chat -> save -> restore -> delete
     let _lock = HOME_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("HOME", tmp.path()) };
+    unsafe { common::set_test_home(tmp.path()) };
 
     let ws = WorkspaceConfig::new("/home/user/project");
     session::save_workspace_config(&ws);
