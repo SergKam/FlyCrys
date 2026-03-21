@@ -96,18 +96,26 @@ pub fn save_scrollback(terminal: &vte4::Terminal, path: &Path) {
 /// Restore previously saved terminal scrollback content.
 /// Feeds the text into the terminal display before the shell is spawned,
 /// giving visual continuity of previous output.
+///
+/// Note: `write_contents_sync` saves plain text (no ANSI colors) with `\n`
+/// line endings, but VTE `feed()` interprets raw terminal output where `\n`
+/// only moves the cursor down (not back to column 0). We convert `\n` to
+/// `\r\n` so lines render correctly, and dim the restored text so the user
+/// knows it's historical (not a live session).
 pub fn restore_scrollback(terminal: &vte4::Terminal, path: &Path) {
     if let Ok(content) = std::fs::read(path)
         && !content.is_empty()
     {
-        // Strip trailing blank lines to keep things clean
         let text = String::from_utf8_lossy(&content);
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
-            // Feed as terminal output (rendered, not sent to shell)
-            terminal.feed(trimmed.as_bytes());
-            // Add a newline separator before the fresh shell prompt
-            terminal.feed(b"\r\n");
+            // Dim attribute (SGR 2) so restored text is visually distinct
+            terminal.feed(b"\x1b[2m");
+            // Convert bare \n to \r\n for proper cursor positioning in feed()
+            let fixed = trimmed.replace('\n', "\r\n");
+            terminal.feed(fixed.as_bytes());
+            // Reset attributes and add separator before fresh shell prompt
+            terminal.feed(b"\x1b[0m\r\n");
         }
     }
 }
