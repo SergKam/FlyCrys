@@ -4,6 +4,7 @@
 pub const AUTOSAVE_INTERVAL_SECS: u64 = 5;
 pub const GIT_REFRESH_INTERVAL_SECS: u64 = 5;
 pub const FILE_WATCHER_SYNC_MS: u64 = 200;
+pub const TERMINAL_SAVE_INTERVAL_SECS: u64 = 30;
 
 // --- UI Dimensions ---
 pub const DEFAULT_WINDOW_WIDTH: i32 = 1200;

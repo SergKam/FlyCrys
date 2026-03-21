@@ -47,17 +47,20 @@ impl Workspace {
         // Right pane top: text view with toolbar
         let tv = textview::create_text_view();
 
-        // Right pane bottom: terminal (initially hidden, spawned if was visible)
+        // Right pane bottom: terminal (initially hidden, deferred spawn if was visible)
         let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
         let terminal_was_visible = config.borrow().terminal_visible;
         terminal_container.set_visible(terminal_was_visible);
         if terminal_was_visible {
-            // Restore previous scrollback if saved
-            let term_path = session::terminal_content_path(&config.borrow().id);
-            terminal::restore_scrollback(&vte_terminal, &term_path);
-            // Spawn a fresh shell in the workspace directory
+            // Defer restore+spawn to after the UI is painted — don't block startup
+            let vte = vte_terminal.clone();
+            let ws_id = config.borrow().id.clone();
             let wd = working_dir.to_string_lossy().to_string();
-            terminal::spawn_shell(&vte_terminal, &wd);
+            glib::idle_add_local_once(move || {
+                let term_path = session::terminal_content_path(&ws_id);
+                terminal::restore_scrollback(&vte, &term_path);
+                terminal::spawn_shell(&vte, &wd);
+            });
         }
 
         // --- Connect toggle handlers FIRST (before setting initial state) ---
@@ -827,6 +830,25 @@ impl Workspace {
                 on_file_removed,
             )
         };
+
+        // Periodic terminal scrollback save — crash protection
+        {
+            use crate::config::constants::TERMINAL_SAVE_INTERVAL_SECS;
+            let vte = vte_terminal.clone();
+            let config = Rc::clone(&config);
+            glib::timeout_add_local(
+                std::time::Duration::from_secs(TERMINAL_SAVE_INTERVAL_SECS),
+                move || {
+                    if !vte.is_visible() {
+                        return glib::ControlFlow::Continue;
+                    }
+                    let ws_id = config.borrow().id.clone();
+                    let term_path = session::terminal_content_path(&ws_id);
+                    terminal::save_scrollback(&vte, &term_path);
+                    glib::ControlFlow::Continue
+                },
+            );
+        }
 
         // Re-highlight callback for theme changes
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
