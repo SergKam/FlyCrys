@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pre-commit hook: formatting, linting, and tests
+# Fails fast on first error to save time.
+
+set -e
+
+echo "=== pre-commit: cargo fmt ==="
+cargo fmt -- --check || { echo "❌ Formatting failed. Run 'cargo fmt' to fix."; exit 1; }
+
+echo "=== pre-commit: cargo clippy ==="
+cargo clippy -- -D warnings || { echo "❌ Clippy found warnings. Fix before committing."; exit 1; }
+
+echo "=== pre-commit: cargo test ==="
+cargo test --quiet || { echo "❌ Tests failed. Fix before committing."; exit 1; }
+
+echo "✅ All checks passed."
