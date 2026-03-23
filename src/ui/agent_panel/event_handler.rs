@@ -1,21 +1,22 @@
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4 as gtk;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::agent_widgets;
+use crate::chat_entry::ChatEntry;
 use crate::models::chat::ChatMessage;
 use crate::services::cli::AgentDomainEvent;
 
-use super::state::{PanelState, ToolInfo};
-use super::{format_token_count, scroll_to_bottom};
+use super::chat_factory;
+use super::state::PanelState;
+use super::{extract_file_path, extract_tool_display, format_token_count, scroll_to_bottom};
 
-/// Handle a single domain event from the agent backend, updating UI and state.
+/// Handle a single domain event from the agent backend.
 pub(crate) fn handle_domain_event(
     state: &Rc<RefCell<PanelState>>,
-    message_list: &gtk::Box,
-    scrolled: &gtk::ScrolledWindow,
     send_btn: &gtk::Button,
     pause_btn: &gtk::Button,
     stop_btn: &gtk::Button,
@@ -39,74 +40,67 @@ pub(crate) fn handle_domain_event(
 
         AgentDomainEvent::TextDelta(text) => {
             let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
-            // Create label on first delta if needed
-            if s.chat.current_text_label.is_none() {
-                let (container, label) = agent_widgets::create_assistant_text();
-                let cb = s.on_open_file.clone();
-                label.connect_activate_link(move |_label, uri| {
-                    if let Some(path) = uri.strip_prefix("file://") {
-                        cb(path);
-                        gtk::glib::Propagation::Stop
-                    } else {
-                        gtk::glib::Propagation::Proceed
-                    }
-                });
-                message_list.append(&container);
-                s.chat.current_text_label = Some(label);
+            remove_thinking_entry(&mut s);
+            if s.chat.current_streaming_entry.is_none() {
+                let entry = ChatEntry::new_assistant_streaming();
+                let widget = chat_factory::build_and_cache_widget(
+                    &entry,
+                    &s.on_open_file,
+                    s.config.theme.get().is_dark(),
+                );
+                s.chat.chat_box.append(&widget);
+                s.chat.current_streaming_entry = Some(entry);
                 s.chat.current_text.clear();
             }
             s.chat.current_text.push_str(&text);
-            if let Some(ref label) = s.chat.current_text_label {
-                agent_widgets::update_assistant_text(
-                    label,
-                    &s.chat.current_text,
-                    s.config.theme.get().is_dark(),
-                );
+            if let Some(ref entry) = s.chat.current_streaming_entry {
+                entry.set_text(s.chat.current_text.as_str());
+                if let Some(ref label) = entry.text_label() {
+                    agent_widgets::update_assistant_text(
+                        label,
+                        &s.chat.current_text,
+                        s.config.theme.get().is_dark(),
+                    );
+                }
             }
+            let scrolled = s.chat.scrolled.clone();
             drop(s);
-            scroll_to_bottom(scrolled);
+            scroll_to_bottom(&scrolled);
         }
 
         AgentDomainEvent::TextBlockFinished { full_text } => {
             let mut s = state.borrow_mut();
-            // Record in history (use full_text from backend which tracked the full block)
+            if let Some(ref entry) = s.chat.current_streaming_entry {
+                entry.set_is_streaming(false);
+            }
             if !full_text.is_empty() {
                 s.chat
                     .chat_history
                     .borrow_mut()
                     .push(ChatMessage::AssistantText { text: full_text });
             }
-            s.chat.current_text_label = None;
+            s.chat.current_streaming_entry = None;
             s.chat.current_text.clear();
+            let scrolled = s.chat.scrolled.clone();
             drop(s);
-            scroll_to_bottom(scrolled);
+            scroll_to_bottom(&scrolled);
         }
 
-        AgentDomainEvent::ThinkingStarted => {
-            // Thinking spinner is already shown when the message is sent;
-            // nothing extra needed here.
-        }
+        AgentDomainEvent::ThinkingStarted => {}
 
-        AgentDomainEvent::ThinkingDelta(_text) => {
-            // Currently not displayed in the UI — thinking content is hidden.
-        }
+        AgentDomainEvent::ThinkingDelta(_text) => {}
 
         AgentDomainEvent::ThinkingFinished => {
             let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
+            remove_thinking_entry(&mut s);
         }
 
         AgentDomainEvent::ToolStarted { id: _, name: _ } => {
-            // Tool widget is created when ToolInputFinished arrives
-            // (after all input JSON has been accumulated).
             let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
+            remove_thinking_entry(&mut s);
         }
 
-        AgentDomainEvent::ToolInputDelta(_json) => {
-            // Input is being accumulated by the backend; nothing to do in UI.
-        }
+        AgentDomainEvent::ToolInputDelta(_json) => {}
 
         AgentDomainEvent::ToolInputFinished {
             id,
@@ -114,28 +108,23 @@ pub(crate) fn handle_domain_event(
             input_json,
         } => {
             let mut s = state.borrow_mut();
-            let input_text = super::extract_tool_display(&name, &input_json);
-            let file_path = super::extract_file_path(&input_json);
-            let on_open = s.on_open_file.clone();
-            let (container, header_label, content_box, spinner) =
-                agent_widgets::create_tool_call(&name, &input_text, file_path.as_deref(), on_open);
-            message_list.append(&container);
+            let input_text = extract_tool_display(&name, &input_json);
+            let file_path = extract_file_path(&input_json).unwrap_or_default();
 
-            s.chat.pending_tools.insert(
-                id,
-                ToolInfo {
-                    header_label,
-                    content_box,
-                    spinner,
-                    tool_name: name,
-                    tool_input: input_json,
-                },
+            let entry = ChatEntry::new_tool_call(&name, &input_json, &input_text, &file_path);
+            let widget = chat_factory::build_and_cache_widget(
+                &entry,
+                &s.on_open_file,
+                s.config.theme.get().is_dark(),
             );
-            // Clear text tracking since a tool block supersedes any text block
-            s.chat.current_text_label = None;
+            s.chat.chat_box.append(&widget);
+            s.chat.pending_tools.insert(id, entry);
+
+            s.chat.current_streaming_entry = None;
             s.chat.current_text.clear();
+            let scrolled = s.chat.scrolled.clone();
             drop(s);
-            scroll_to_bottom(scrolled);
+            scroll_to_bottom(&scrolled);
         }
 
         AgentDomainEvent::ToolResult {
@@ -144,35 +133,45 @@ pub(crate) fn handle_domain_event(
             is_error,
         } => {
             let mut s = state.borrow_mut();
-            if let Some(info) = s.chat.pending_tools.remove(&id) {
-                // Mark complete (show triangle, stop spinner) — output rendered lazily on click
-                agent_widgets::mark_tool_complete(&info.spinner, &info.header_label, is_error);
+            if let Some(entry) = s.chat.pending_tools.remove(&id) {
+                entry.set_tool_output(output.as_str());
+                entry.set_tool_is_error(is_error);
+                entry.set_tool_complete(true);
 
-                // Wire lazy rendering: on first expand, render the output
-                let output_clone = output.clone();
-                let tool_name = info.tool_name.clone();
-                let tool_input = info.tool_input.clone();
-                let content_box = info.content_box.clone();
-                let rendered = Rc::new(Cell::new(false));
-                content_box.connect_map(move |cb| {
-                    if !rendered.get() {
-                        rendered.set(true);
-                        agent_widgets::render_tool_output(
-                            cb,
-                            &output_clone,
-                            is_error,
-                            &tool_name,
-                            &tool_input,
-                        );
-                    }
-                });
+                if let Some(ref spinner) = entry.tool_spinner_widget()
+                    && let Some(ref triangle) = entry.tool_triangle_widget()
+                {
+                    agent_widgets::mark_tool_complete(spinner, triangle, is_error);
+                }
 
+                if let Some(ref content_box) = entry.tool_content_box_widget() {
+                    let output_clone = output.clone();
+                    let tool_name = entry.tool_name();
+                    let tool_input = entry.tool_input();
+                    let cb = content_box.clone();
+                    let rendered = Rc::new(Cell::new(false));
+                    content_box.connect_map(move |_| {
+                        if !rendered.get() {
+                            rendered.set(true);
+                            agent_widgets::render_tool_output(
+                                &cb,
+                                &output_clone,
+                                is_error,
+                                &tool_name,
+                                &tool_input,
+                            );
+                        }
+                    });
+                }
+
+                let tool_name = entry.tool_name();
+                let tool_input = entry.tool_input();
                 s.chat
                     .chat_history
                     .borrow_mut()
                     .push(ChatMessage::ToolCall {
-                        tool_name: info.tool_name.clone(),
-                        tool_input: info.tool_input.clone(),
+                        tool_name,
+                        tool_input,
                         output,
                         is_error,
                     });
@@ -180,7 +179,9 @@ pub(crate) fn handle_domain_event(
             if let Some(ref cb) = s.on_tool_result {
                 cb();
             }
-            scroll_to_bottom(scrolled);
+            let scrolled = s.chat.scrolled.clone();
+            drop(s);
+            scroll_to_bottom(&scrolled);
         }
 
         AgentDomainEvent::TokenUsage {
@@ -192,7 +193,6 @@ pub(crate) fn handle_domain_event(
             let mut s = state.borrow_mut();
             let total_input = input_tokens + cache_write_tokens + cache_read_tokens;
             let total = total_input + output_tokens;
-            // Update stored context_tokens with best available data
             if total_input > 0 {
                 s.tokens.context_tokens = total_input;
             }
@@ -214,18 +214,6 @@ pub(crate) fn handle_domain_event(
         } => {
             let is_error = outcome == crate::config::types::AgentOutcome::Error;
 
-            // Only show a system message for errors
-            if is_error {
-                let msg = match message {
-                    Some(ref detail) if !detail.is_empty() => {
-                        format!("\u{2717} Error: {detail}")
-                    }
-                    _ => "\u{2717} Error (no details available)".to_string(),
-                };
-                let info = agent_widgets::create_system_message(&msg);
-                message_list.append(&info);
-            }
-
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
             pause_btn.set_icon_name("media-playback-pause-symbolic");
@@ -233,16 +221,30 @@ pub(crate) fn handle_domain_event(
             stop_btn.set_sensitive(false);
 
             let mut s = state.borrow_mut();
-            remove_thinking_spinner(&mut s);
+            remove_thinking_entry(&mut s);
+
+            if is_error {
+                let msg = match message {
+                    Some(ref detail) if !detail.is_empty() => {
+                        format!("\u{2717} Error: {detail}")
+                    }
+                    _ => "\u{2717} Error (no details available)".to_string(),
+                };
+                let entry = ChatEntry::new_system(&msg);
+                let widget = chat_factory::build_and_cache_widget(
+                    &entry,
+                    &s.on_open_file,
+                    s.config.theme.get().is_dark(),
+                );
+                s.chat.chat_box.append(&widget);
+            }
             s.tab_spinner.set_spinning(false);
 
-            // Update cost display
             s.tokens.total_cost_usd = total_cost_usd;
             s.tokens
                 .cost_label
                 .set_text(&format!("${:.2}", total_cost_usd));
 
-            // Update context window if a more accurate value arrived
             if let Some(ctx) = context_window
                 && ctx > 0
             {
@@ -255,18 +257,21 @@ pub(crate) fn handle_domain_event(
                 ));
             }
 
-            // Stop any tool spinners that never received a result
-            let orphaned: Vec<ToolInfo> = s.chat.pending_tools.drain().map(|(_, v)| v).collect();
-            for ti in &orphaned {
-                ti.spinner.set_spinning(false);
-                ti.spinner.set_visible(false);
+            // Finalize orphaned tools
+            let orphaned: Vec<ChatEntry> = s.chat.pending_tools.drain().map(|(_, v)| v).collect();
+            for entry in &orphaned {
+                entry.set_tool_complete(true);
+                if let Some(ref spinner) = entry.tool_spinner_widget() {
+                    spinner.set_spinning(false);
+                    spinner.set_visible(false);
+                }
             }
             {
                 let mut hist = s.chat.chat_history.borrow_mut();
-                for ti in orphaned {
+                for entry in orphaned {
                     hist.push(ChatMessage::ToolCall {
-                        tool_name: ti.tool_name,
-                        tool_input: ti.tool_input,
+                        tool_name: entry.tool_name(),
+                        tool_input: entry.tool_input(),
                         output: String::new(),
                         is_error: false,
                     });
@@ -281,7 +286,7 @@ pub(crate) fn handle_domain_event(
                     hist.push(ChatMessage::System { text: err_msg });
                 }
             }
-            s.chat.current_text_label = None;
+            s.chat.current_streaming_entry = None;
             s.chat.current_text.clear();
 
             // Desktop notification
@@ -307,24 +312,32 @@ pub(crate) fn handle_domain_event(
                 cb();
             }
 
-            scroll_to_bottom(scrolled);
+            let scrolled = s.chat.scrolled.clone();
+            drop(s);
+            scroll_to_bottom(&scrolled);
         }
 
         AgentDomainEvent::ProcessError(msg) => {
-            let label = agent_widgets::create_system_message(&format!("\u{26a0} {msg}"));
-            label.add_css_class("error-text");
-            message_list.append(&label);
-            scroll_to_bottom(scrolled);
+            let s = state.borrow_mut();
+            let entry = ChatEntry::new_system(&format!("\u{26a0} {msg}"));
+            let widget = chat_factory::build_and_cache_widget(
+                &entry,
+                &s.on_open_file,
+                s.config.theme.get().is_dark(),
+            );
+            s.chat.chat_box.append(&widget);
+            let scrolled = s.chat.scrolled.clone();
+            drop(s);
+            scroll_to_bottom(&scrolled);
         }
     }
 }
 
-/// Remove the thinking spinner from the message list if present.
-pub(super) fn remove_thinking_spinner(state: &mut PanelState) {
-    if let Some(spinner) = state.chat.thinking_spinner.take()
-        && let Some(parent) = spinner.parent()
-        && let Some(parent_box) = parent.downcast_ref::<gtk::Box>()
+/// Remove the thinking spinner widget from the chat_box if present.
+pub(super) fn remove_thinking_entry(state: &mut PanelState) {
+    if let Some(entry) = state.chat.thinking_entry.take()
+        && let Some(widget) = entry.cached_widget()
     {
-        parent_box.remove(&spinner);
+        state.chat.chat_box.remove(&widget);
     }
 }

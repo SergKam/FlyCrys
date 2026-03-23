@@ -1,3 +1,4 @@
+mod chat_factory;
 mod event_handler;
 mod state;
 
@@ -10,11 +11,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::agent_widgets;
-use crate::config::constants::{
-    AGENT_PANEL_MIN_WIDTH, AUTO_SCROLL_THRESHOLD, CHAT_BATCH_SIZE, CHAT_TAIL_COUNT,
-    DEFAULT_CONTEXT_WINDOW, INPUT_MAX_HEIGHT,
-};
+use crate::chat_entry::ChatEntry;
+use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, DEFAULT_CONTEXT_WINDOW, INPUT_MAX_HEIGHT};
 use crate::config::types::{NotificationLevel, Theme};
 use crate::models::agent_config::AgentConfig;
 use crate::models::chat::ChatMessage;
@@ -22,6 +20,9 @@ use crate::services::cli::claude::ClaudeBackend;
 use crate::services::cli::{AgentBackend, AgentDomainEvent, AgentSpawnConfig, ImageAttachment};
 
 use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
+
+/// How many history entries to show initially / per "Load previous" click.
+const PAGE_SIZE: usize = 20;
 
 struct AttachedImage {
     bytes: Vec<u8>,
@@ -65,7 +66,6 @@ pub fn create_agent_panel(
     let dropdown = gtk::DropDown::new(Some(string_list), gtk::Expression::NONE);
     dropdown.set_tooltip_text(Some("Agent profile"));
 
-    // Set initial selection
     let initial_idx = agent_configs
         .iter()
         .position(|c| c.name == initial_profile)
@@ -80,34 +80,28 @@ pub fn create_agent_panel(
     gear_btn.set_has_frame(false);
     header.append(&gear_btn);
 
-    // Chat history
-    let message_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    message_list.set_valign(gtk::Align::End);
+    // --- Chat area ---
+    let chat_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    chat_box.set_valign(gtk::Align::End);
+
+    // "Load previous" button at the top of chat_box
+    let load_prev_btn = gtk::Button::with_label("\u{25b2} Load previous messages");
+    load_prev_btn.set_margin_top(4);
+    load_prev_btn.set_margin_bottom(4);
+    load_prev_btn.set_margin_start(48);
+    load_prev_btn.set_margin_end(48);
+    load_prev_btn.add_css_class("flat");
+    load_prev_btn.set_visible(false);
+    chat_box.append(&load_prev_btn);
 
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
-        .child(&message_list)
+        .child(&chat_box)
         .build();
 
-    // Auto-scroll: when content grows, scroll to bottom (unless user scrolled up)
-    {
-        let adj = scrolled.vadjustment();
-        let at_bottom = Rc::new(Cell::new(true));
-
-        let flag = Rc::clone(&at_bottom);
-        adj.connect_value_changed(move |adj| {
-            flag.set(adj.value() >= adj.upper() - adj.page_size() - AUTO_SCROLL_THRESHOLD);
-        });
-
-        let flag = Rc::clone(&at_bottom);
-        adj.connect_changed(move |adj| {
-            if flag.get() {
-                adj.set_value(adj.upper() - adj.page_size());
-            }
-        });
-    }
+    // (Auto-scroll is handled explicitly via scroll_to_bottom calls.)
 
     // Attachments preview bar (hidden when empty)
     let attach_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -119,7 +113,7 @@ pub fn create_agent_panel(
 
     let attachments: Rc<RefCell<Vec<AttachedImage>>> = Rc::new(RefCell::new(Vec::new()));
 
-    // Input area: full-width text input (no side buttons)
+    // Input area
     let input_frame = gtk::Frame::new(None);
     input_frame.set_hexpand(true);
     input_frame.set_margin_start(8);
@@ -151,7 +145,6 @@ pub fn create_agent_panel(
     toolbar.set_margin_top(2);
     toolbar.set_margin_bottom(6);
 
-    // Left group: action buttons
     let attach_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
     attach_btn.set_tooltip_text(Some("Attach image (Ctrl+V to paste)"));
     attach_btn.set_has_frame(false);
@@ -170,7 +163,6 @@ pub fn create_agent_panel(
     compact_btn.set_tooltip_text(Some("Compact conversation to save tokens"));
     compact_btn.set_has_frame(false);
 
-    // Quick commands drop-up menu
     let quick_menu = gio::Menu::new();
     for cmd in crate::config::constants::QUICK_COMMANDS {
         quick_menu.append(Some(cmd.label), Some(&format!("panel.{}", cmd.action_name)));
@@ -183,11 +175,9 @@ pub fn create_agent_panel(
     quick_btn.set_direction(gtk::ArrowType::Up);
     quick_btn.set_menu_model(Some(&quick_menu));
 
-    // Spacer pushes right group to end
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
 
-    // Right group: info labels + send
     let token_label = gtk::Label::new(Some("\u{2013}"));
     token_label.set_tooltip_text(Some("Context window usage"));
     token_label.add_css_class("toolbar-info");
@@ -200,7 +190,6 @@ pub fn create_agent_panel(
     send_btn.set_tooltip_text(Some("Send (Ctrl+Enter)"));
     send_btn.add_css_class("suggested-action");
 
-    // Assemble toolbar
     toolbar.append(&attach_btn);
     toolbar.append(&pause_btn);
     toolbar.append(&stop_btn);
@@ -212,13 +201,16 @@ pub fn create_agent_panel(
     toolbar.append(&cost_label);
     toolbar.append(&send_btn);
 
-    // Assemble panel
     panel.append(&header);
     panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     panel.append(&scrolled);
     panel.append(&attach_bar);
     panel.append(&input_frame);
     panel.append(&toolbar);
+
+    // --- Compute first page boundaries ---
+    let total_history = chat_history.borrow().len();
+    let page_start = total_history.saturating_sub(PAGE_SIZE);
 
     // --- State ---
     let state = Rc::new(RefCell::new(PanelState {
@@ -235,10 +227,13 @@ pub fn create_agent_panel(
             cost_label: cost_label.clone(),
         },
         chat: ChatState {
-            current_text_label: None,
+            chat_box: chat_box.clone(),
+            scrolled: scrolled.clone(),
+            oldest_rendered_idx: total_history, // nothing rendered yet
+            current_streaming_entry: None,
             current_text: String::new(),
             pending_tools: HashMap::new(),
-            thinking_spinner: None,
+            thinking_entry: None,
             chat_history,
         },
         config: PanelConfig {
@@ -254,73 +249,79 @@ pub fn create_agent_panel(
         on_tool_result,
     }));
 
-    // Render restored chat history in two phases:
-    // 1. Immediately render the last TAIL_COUNT messages (visible on screen)
-    // 2. Prepend older messages in batches via idle callbacks with a spinner
+    // Show "Load previous" button if there are older entries
+    if page_start > 0 {
+        load_prev_btn.set_visible(true);
+    }
+
+    // --- Deferred first-page load ---
+    // One idle callback: build all PAGE_SIZE widgets, then scroll to bottom.
     {
-        let state = Rc::clone(&state);
-        let message_list = message_list.clone();
-        let scrolled = scrolled.clone();
+        let state_load = Rc::clone(&state);
+        let scrolled_load = scrolled.clone();
         glib::idle_add_local_once(move || {
-            let s = state.borrow();
+            let mut s = state_load.borrow_mut();
             let history = s.chat.chat_history.borrow();
+            let total = history.len();
             let on_open = s.on_open_file.clone();
             let dark = s.config.theme.get().is_dark();
-            let total = history.len();
-            let tail_start = total.saturating_sub(CHAT_TAIL_COUNT);
 
-            // Phase 1: render the tail (last N messages) immediately
-            for msg in &history[tail_start..] {
-                render_chat_message(msg, &message_list, &on_open, dark);
+            for i in page_start..total {
+                let entry = chat_message_to_entry(&history[i]);
+                let widget = chat_factory::build_and_cache_widget(&entry, &on_open, dark);
+                s.chat.chat_box.append(&widget);
             }
             drop(history);
+            s.chat.oldest_rendered_idx = page_start;
             drop(s);
-            scroll_to_bottom(&scrolled);
 
-            // Phase 2: prepend older messages in batches if any exist
-            if tail_start > 0 {
-                // Loading spinner at the very top
-                let loading = agent_widgets::create_thinking_spinner();
-                message_list.prepend(&loading);
+            // Scroll to bottom after next layout
+            let sc = scrolled_load.clone();
+            glib::idle_add_local_once(move || {
+                let adj = sc.vadjustment();
+                adj.set_value(adj.upper() - adj.page_size());
+            });
+        });
+    }
 
-                // Snapshot the older slice for batch processing
-                let state2 = Rc::clone(&state);
-                let older: Vec<ChatMessage> =
-                    state2.borrow().chat.chat_history.borrow()[..tail_start].to_vec();
-                // Cursor walks backwards from the end of the older slice
-                let cursor = Rc::new(Cell::new(older.len()));
+    // --- "Load previous" button handler ---
+    {
+        let state_prev = Rc::clone(&state);
+        let btn = load_prev_btn.clone();
+        load_prev_btn.connect_clicked(move |_| {
+            let mut s = state_prev.borrow_mut();
+            let current_start = s.chat.oldest_rendered_idx;
+            if current_start == 0 {
+                btn.set_visible(false);
+                return;
+            }
+            let batch = PAGE_SIZE.min(current_start);
+            let new_start = current_start - batch;
 
-                let message_list2 = message_list.clone();
-                let scrolled2 = scrolled.clone();
-                glib::idle_add_local(move || {
-                    let s = state2.borrow();
-                    let on_open = s.on_open_file.clone();
-                    let dark = s.config.theme.get().is_dark();
-                    drop(s);
+            let on_open = s.on_open_file.clone();
+            let dark = s.config.theme.get().is_dark();
 
-                    let cur = cursor.get();
-                    if cur == 0 {
-                        // Done — remove the loading spinner
-                        message_list2.remove(&loading);
-                        return glib::ControlFlow::Break;
-                    }
+            // Build entries from history (borrow scoped tightly).
+            let entries: Vec<ChatEntry> = {
+                let history = s.chat.chat_history.borrow();
+                (new_start..current_start)
+                    .map(|i| chat_message_to_entry(&history[i]))
+                    .collect()
+            };
 
-                    let batch_start = cur.saturating_sub(CHAT_BATCH_SIZE);
-                    // Insert each message after the previous one so the batch
-                    // appears in chronological order below the spinner.
-                    let mut insert_after: Option<gtk::Widget> = Some(loading.clone().upcast());
-                    for msg in &older[batch_start..cur] {
-                        let widget = render_chat_message_widget(msg, &on_open, dark);
-                        message_list2.insert_child_after(&widget, insert_after.as_ref());
-                        insert_after = Some(widget);
-                    }
-                    cursor.set(batch_start);
+            // Insert after the button, before existing message widgets.
+            let first_msg = btn.next_sibling();
+            for entry in &entries {
+                let widget = chat_factory::build_and_cache_widget(entry, &on_open, dark);
+                match &first_msg {
+                    Some(fw) => widget.insert_before(&s.chat.chat_box, Some(fw)),
+                    None => s.chat.chat_box.append(&widget),
+                }
+            }
 
-                    // Keep scroll pinned to the bottom while prepending
-                    scroll_to_bottom(&scrolled2);
-
-                    glib::ControlFlow::Continue
-                });
+            s.chat.oldest_rendered_idx = new_start;
+            if new_start == 0 {
+                btn.set_visible(false);
             }
         });
     }
@@ -332,7 +333,6 @@ pub fn create_agent_panel(
             let idx = dd.selected() as usize;
             let mut s = state.borrow_mut();
             s.config.selected_profile_idx = idx;
-            // Clear session_id when profile changes (new conversation)
             s.process.session_id = None;
             (s.on_session_id_change)(None);
             if let Some(cfg) = s.config.agent_configs.get(idx) {
@@ -352,12 +352,10 @@ pub fn create_agent_panel(
             let state_clone = Rc::clone(&state);
             let dropdown_clone = dropdown.clone();
             crate::agent_config_dialog::show(&window, move |new_configs| {
-                // Update dropdown model
                 let names: Vec<&str> = new_configs.iter().map(|c| c.name.as_str()).collect();
                 let new_model = gtk::StringList::new(&names);
                 dropdown_clone.set_model(Some(&new_model));
 
-                // Find the currently selected profile in the new list
                 let mut s = state_clone.borrow_mut();
                 let current_name = s
                     .config
@@ -429,7 +427,6 @@ pub fn create_agent_panel(
     // --- Send handler ---
     let do_send = {
         let state = Rc::clone(&state);
-        let message_list = message_list.clone();
         let scrolled = scrolled.clone();
         let input_view = input_view.clone();
         let send_btn = send_btn.clone();
@@ -451,19 +448,26 @@ pub fn create_agent_panel(
             }
             buffer.set_text("");
 
-            // Drain attached images
             let images: Vec<AttachedImage> = attachments.borrow_mut().drain(..).collect();
             rebuild_attach_bar(&attachments, &attach_bar);
 
-            // Build user bubble
+            // Build user entry and widget
             let textures: Vec<gtk::gdk::Texture> =
                 images.iter().map(|i| i.texture.clone()).collect();
-            let user_widget = if textures.is_empty() {
-                agent_widgets::create_user_message(&text)
+            let user_entry = if textures.is_empty() {
+                ChatEntry::new_user(&text)
             } else {
-                agent_widgets::create_user_message_with_images(&text, &textures)
+                ChatEntry::new_user_with_images(&text, textures)
             };
-            message_list.append(&user_widget);
+            {
+                let s = state.borrow();
+                let widget = chat_factory::build_and_cache_widget(
+                    &user_entry,
+                    &s.on_open_file,
+                    s.config.theme.get().is_dark(),
+                );
+                s.chat.chat_box.append(&widget);
+            }
             scroll_to_bottom(&scrolled);
 
             // Record in history
@@ -476,7 +480,6 @@ pub fn create_agent_panel(
                     .push(ChatMessage::User { text: text.clone() });
             }
 
-            // Build API image attachments
             let api_images: Vec<ImageAttachment> = images
                 .into_iter()
                 .map(|img| ImageAttachment {
@@ -488,7 +491,6 @@ pub fn create_agent_panel(
             let mut s = state.borrow_mut();
 
             if !s.process.process.is_alive() {
-                // Spawn new process with selected agent profile
                 let (sender, receiver) = mpsc::channel::<AgentDomainEvent>();
                 let receiver = Rc::new(RefCell::new(Some(receiver)));
 
@@ -504,17 +506,18 @@ pub fn create_agent_panel(
 
                 let wd = s.process.working_dir.clone();
                 if let Err(err_msg) = s.process.process.spawn(sender, &wd, &spawn_config) {
-                    let err = agent_widgets::create_system_message(&format!(
-                        "Failed to start claude CLI: {err_msg}"
-                    ));
-                    message_list.append(&err);
+                    let err_entry =
+                        ChatEntry::new_system(&format!("Failed to start claude CLI: {err_msg}"));
+                    let widget = chat_factory::build_and_cache_widget(
+                        &err_entry,
+                        &s.on_open_file,
+                        s.config.theme.get().is_dark(),
+                    );
+                    s.chat.chat_box.append(&widget);
                     return;
                 }
 
-                // Poll receiver on GTK main loop (~60fps)
                 let state_rx = Rc::clone(&state);
-                let ml = message_list.clone();
-                let sc = scrolled.clone();
                 let send_btn_rx = send_btn.clone();
                 let pause_btn_rx = pause_btn.clone();
                 let stop_btn_rx = stop_btn.clone();
@@ -527,8 +530,6 @@ pub fn create_agent_panel(
                     while let Ok(event) = rx.try_recv() {
                         event_handler::handle_domain_event(
                             &state_rx,
-                            &ml,
-                            &sc,
                             &send_btn_rx,
                             &pause_btn_rx,
                             &stop_btn_rx,
@@ -542,12 +543,18 @@ pub fn create_agent_panel(
             let _ = s.process.process.send_message(&text, &api_images);
 
             // Show thinking spinner
-            let thinking = agent_widgets::create_thinking_spinner();
-            message_list.append(&thinking);
-            scroll_to_bottom(&scrolled);
-            s.chat.thinking_spinner = Some(thinking);
+            let thinking = ChatEntry::new_thinking();
+            let widget = chat_factory::build_and_cache_widget(
+                &thinking,
+                &s.on_open_file,
+                s.config.theme.get().is_dark(),
+            );
+            s.chat.chat_box.append(&widget);
+            s.chat.thinking_entry = Some(thinking);
             s.tab_spinner.set_spinning(true);
             drop(s);
+
+            scroll_to_bottom(&scrolled);
 
             send_btn.set_sensitive(false);
             pause_btn.set_sensitive(true);
@@ -621,18 +628,22 @@ pub fn create_agent_panel(
         let send_btn = send_btn.clone();
         let pause_btn = pause_btn.clone();
         let stop_btn_clone = stop_btn.clone();
-        let message_list = message_list.clone();
         stop_btn_clone.connect_clicked(move |btn| {
             let mut s = state.borrow_mut();
             s.process.process.stop();
-            event_handler::remove_thinking_spinner(&mut s);
+            event_handler::remove_thinking_entry(&mut s);
             s.tab_spinner.set_spinning(false);
             s.chat.chat_history.borrow_mut().push(ChatMessage::System {
                 text: "\u{23f9} Stopped".to_string(),
             });
+            let stopped = ChatEntry::new_system("\u{23f9} Stopped");
+            let widget = chat_factory::build_and_cache_widget(
+                &stopped,
+                &s.on_open_file,
+                s.config.theme.get().is_dark(),
+            );
+            s.chat.chat_box.append(&widget);
             drop(s);
-            let info = agent_widgets::create_system_message("\u{23f9} Stopped");
-            message_list.append(&info);
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
             pause_btn.set_icon_name("media-playback-pause-symbolic");
@@ -641,7 +652,7 @@ pub fn create_agent_panel(
         });
     }
 
-    // Compact button: sends /compact to Claude CLI
+    // Compact button
     {
         let do_send_compact = do_send.clone();
         let input_view_compact = input_view.clone();
@@ -672,20 +683,17 @@ pub fn create_agent_panel(
 }
 
 // ---------------------------------------------------------------------------
-// Helper functions shared across sub-modules
+// Helpers
 // ---------------------------------------------------------------------------
 
 fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar: &gtk::Box) {
     while let Some(child) = attach_bar.first_child() {
         attach_bar.remove(&child);
     }
-
     let att = attachments.borrow();
     attach_bar.set_visible(!att.is_empty());
-
     for (idx, img) in att.iter().enumerate() {
         let thumb_box = gtk::Overlay::new();
-
         let picture = gtk::Picture::for_paintable(&img.texture);
         picture.set_content_fit(gtk::ContentFit::Contain);
         let frame = gtk::Frame::new(None);
@@ -693,16 +701,13 @@ fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar:
         frame.set_overflow(gtk::Overflow::Hidden);
         frame.set_child(Some(&picture));
         frame.add_css_class("attach-thumb");
-
         thumb_box.set_child(Some(&frame));
-
         let remove_btn = gtk::Button::from_icon_name("window-close-symbolic");
         remove_btn.add_css_class("circular");
         remove_btn.add_css_class("osd");
         remove_btn.set_halign(gtk::Align::End);
         remove_btn.set_valign(gtk::Align::Start);
         thumb_box.add_overlay(&remove_btn);
-
         let att_clone = Rc::clone(attachments);
         let bar_clone = attach_bar.clone();
         remove_btn.connect_clicked(move |_| {
@@ -713,7 +718,6 @@ fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar:
             drop(v);
             rebuild_attach_bar(&att_clone, &bar_clone);
         });
-
         attach_bar.append(&thumb_box);
     }
 }
@@ -729,21 +733,20 @@ fn mime_for_path(path: &std::path::Path) -> String {
     .to_string()
 }
 
-/// Format token count as human-readable string (e.g., "25K", "1.2M", "500")
-fn format_token_count(tokens: u64) -> String {
+/// Format token count as human-readable string
+pub(super) fn format_token_count(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
     } else if tokens >= 1_000 {
         format!("{}K", tokens / 1_000)
     } else {
-        format!("{}", tokens)
+        format!("{tokens}")
     }
 }
 
 /// Extract a short display string from tool input JSON
-fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
+pub(super) fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-        // Common patterns
         if let Some(cmd) = val.get("command").and_then(|v| v.as_str()) {
             return cmd.to_string();
         }
@@ -757,7 +760,6 @@ fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
         if let Some(p) = val.get("pattern").and_then(|v| v.as_str()) {
             return p.to_string();
         }
-        // Fallback: first string value
         for (_k, v) in val.as_object().into_iter().flatten() {
             if let Some(s) = v.as_str()
                 && s.len() <= 80
@@ -769,81 +771,39 @@ fn extract_tool_display(tool_name: &str, json_str: &str) -> String {
     tool_name.to_string()
 }
 
-/// Extract file_path from tool input JSON (used by Read, Write, Edit, etc.)
-fn extract_file_path(json_str: &str) -> Option<String> {
+/// Extract file_path from tool input JSON
+pub(super) fn extract_file_path(json_str: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
     val.get("file_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
 
-fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
+/// Scroll to the very bottom.
+pub(super) fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
     let adj = scrolled.vadjustment();
     adj.set_value(adj.upper() - adj.page_size());
 }
 
-/// Render a single chat message, returning the widget (for prepend/insert).
-fn render_chat_message_widget(
-    msg: &ChatMessage,
-    on_open: &Rc<dyn Fn(&str)>,
-    dark: bool,
-) -> gtk::Widget {
+/// Convert a persisted ChatMessage into a ChatEntry.
+fn chat_message_to_entry(msg: &ChatMessage) -> ChatEntry {
     match msg {
-        ChatMessage::User { text } => agent_widgets::create_user_message(text).upcast(),
-        ChatMessage::AssistantText { text } => {
-            let (container, label) = agent_widgets::create_assistant_text();
-            let cb = on_open.clone();
-            label.connect_activate_link(move |_label, uri| {
-                if let Some(path) = uri.strip_prefix("file://") {
-                    cb(path);
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            });
-            agent_widgets::update_assistant_text(&label, text, dark);
-            container.upcast()
-        }
+        ChatMessage::User { text } => ChatEntry::new_user(text),
+        ChatMessage::AssistantText { text } => ChatEntry::new_assistant(text),
         ChatMessage::ToolCall {
             tool_name,
             tool_input,
             output,
             is_error,
         } => {
-            let input_text = extract_tool_display(tool_name, tool_input);
-            let file_path = extract_file_path(tool_input);
-            let (container, header_label, content_box, spinner) = agent_widgets::create_tool_call(
-                tool_name,
-                &input_text,
-                file_path.as_deref(),
-                on_open.clone(),
-            );
-            agent_widgets::mark_tool_complete(&spinner, &header_label, *is_error);
-            // Lazy render: only build output widget when user clicks to expand
-            let output = output.clone();
-            let tool_name = tool_name.clone();
-            let tool_input = tool_input.clone();
-            let is_err = *is_error;
-            let rendered = std::cell::Cell::new(false);
-            content_box.connect_map(move |cb| {
-                if !rendered.get() {
-                    rendered.set(true);
-                    agent_widgets::render_tool_output(cb, &output, is_err, &tool_name, &tool_input);
-                }
-            });
-            container.upcast()
+            let display_hint = extract_tool_display(tool_name, tool_input);
+            let file_path = extract_file_path(tool_input).unwrap_or_default();
+            let entry = ChatEntry::new_tool_call(tool_name, tool_input, &display_hint, &file_path);
+            entry.set_tool_output(output.as_str());
+            entry.set_tool_is_error(*is_error);
+            entry.set_tool_complete(true);
+            entry
         }
-        ChatMessage::System { text } => agent_widgets::create_system_message(text).upcast(),
+        ChatMessage::System { text } => ChatEntry::new_system(text),
     }
-}
-
-/// Render a chat message and append it to the message list.
-fn render_chat_message(
-    msg: &ChatMessage,
-    message_list: &gtk::Box,
-    on_open: &Rc<dyn Fn(&str)>,
-    dark: bool,
-) {
-    let widget = render_chat_message_widget(msg, on_open, dark);
-    message_list.append(&widget);
 }

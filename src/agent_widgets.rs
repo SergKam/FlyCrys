@@ -22,6 +22,7 @@ pub fn create_user_message(text: &str) -> gtk::Box {
     let label = gtk::Label::new(Some(text));
     label.set_wrap(true);
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
     label.set_xalign(0.0);
     label.set_selectable(true);
     label.set_margin_start(10);
@@ -46,6 +47,7 @@ pub fn create_assistant_text() -> (gtk::Box, gtk::Label) {
     let label = gtk::Label::new(None);
     label.set_wrap(true);
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
     label.set_xalign(0.0);
     label.set_selectable(true);
     label.set_use_markup(true);
@@ -202,6 +204,7 @@ pub fn render_tool_output(
         label.set_use_markup(true);
         label.set_markup(&diff_markup);
         label.set_wrap(true);
+        label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
         label.set_xalign(0.0);
         label.set_selectable(true);
         label.add_css_class("monospace");
@@ -229,6 +232,7 @@ pub fn render_tool_output(
 
     let label = gtk::Label::new(Some(&text));
     label.set_wrap(true);
+    label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
     label.set_xalign(0.0);
     label.set_selectable(true);
     label.add_css_class("monospace");
@@ -287,6 +291,7 @@ pub fn create_user_message_with_images(text: &str, textures: &[gtk::gdk::Texture
         let label = gtk::Label::new(Some(text));
         label.set_wrap(true);
         label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
         label.set_xalign(0.0);
         label.set_selectable(true);
         inner.append(&label);

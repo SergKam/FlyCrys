@@ -296,6 +296,7 @@ pub fn load_preview(preview_scroll: &gtk::ScrolledWindow, file_path: &str, is_da
                 let label = gtk::Label::new(None);
                 label.set_markup(&markup);
                 label.set_wrap(true);
+                label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
                 label.set_selectable(true);
                 label.set_xalign(0.0);
                 label.set_valign(gtk::Align::Start);

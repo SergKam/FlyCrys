@@ -30,9 +30,7 @@ pub const DISPLAY_TRUNCATE_KEEP: usize = 57;
 pub const OUTPUT_COLLAPSE_THRESHOLD: usize = 2000;
 pub const OUTPUT_HEAD_TAIL_LINES: usize = 5;
 
-// --- Chat History Pagination ---
-pub const CHAT_TAIL_COUNT: usize = 20;
-pub const CHAT_BATCH_SIZE: usize = 20;
+// (Chat history pagination constants live in agent_panel/mod.rs.)
 
 // --- File Tree ---
 pub const TREE_MAX_EXPAND_PASSES: usize = 30;
