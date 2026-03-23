@@ -779,10 +779,34 @@ pub(super) fn extract_file_path(json_str: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Scroll to the very bottom.
+/// Scroll to the very bottom after GTK finishes laying out new content.
+///
+/// Uses a per-widget coalescing set so that rapid-fire calls (e.g. every
+/// streaming chunk) schedule **one** idle callback per ScrolledWindow,
+/// not hundreds.  Without this the idle queue drowns GTK's layout/paint
+/// cycle and the UI freezes.
 pub(super) fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
-    let adj = scrolled.vadjustment();
-    adj.set_value(adj.upper() - adj.page_size());
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+
+    thread_local! {
+        /// Widget pointer addresses for which an idle callback is already queued.
+        static PENDING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    }
+
+    let key = scrolled.as_ptr() as usize;
+
+    let already_pending = PENDING.with(|set| !set.borrow_mut().insert(key));
+    if already_pending {
+        return;
+    }
+
+    let sc = scrolled.clone();
+    gtk::glib::idle_add_local_once(move || {
+        PENDING.with(|set| set.borrow_mut().remove(&(sc.as_ptr() as usize)));
+        let adj = sc.vadjustment();
+        adj.set_value(adj.upper() - adj.page_size());
+    });
 }
 
 /// Convert a persisted ChatMessage into a ChatEntry.

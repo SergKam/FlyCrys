@@ -177,7 +177,7 @@ fn read_directory_entries(dir: &Path) -> Option<Vec<DirEntry>> {
             .filter_map(|entry| {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy().to_string();
-                if name_str.starts_with('.') {
+                if name_str == ".git" {
                     return None;
                 }
                 let path = entry.path();

@@ -100,7 +100,7 @@ pub fn create_tool_call(
         let name_label = gtk::Label::new(Some(&format!("{tool_name}(")));
         header.append(&name_label);
 
-        let short_path = if path.len() > DISPLAY_TRUNCATE_AT {
+        let short_path = if path.chars().count() > DISPLAY_TRUNCATE_AT {
             let truncated: String = path.chars().take(DISPLAY_TRUNCATE_KEEP).collect();
             format!("{truncated}\u{2026}")
         } else {
@@ -129,8 +129,12 @@ pub fn create_tool_call(
         let close_label = gtk::Label::new(Some(")"));
         header.append(&close_label);
     } else {
-        let short = if tool_input_hint.len() > DISPLAY_TRUNCATE_AT {
-            format!("{}\u{2026}", &tool_input_hint[..DISPLAY_TRUNCATE_KEEP])
+        let short = if tool_input_hint.chars().count() > DISPLAY_TRUNCATE_AT {
+            let truncated: String = tool_input_hint
+                .chars()
+                .take(DISPLAY_TRUNCATE_KEEP)
+                .collect();
+            format!("{truncated}\u{2026}")
         } else {
             tool_input_hint.to_string()
         };
@@ -224,7 +228,13 @@ pub fn render_tool_output(
                 tail.join("\n"),
             )
         } else {
-            output[..OUTPUT_COLLAPSE_THRESHOLD].to_string() + "\u{2026}"
+            output
+                .char_indices()
+                .nth(OUTPUT_COLLAPSE_THRESHOLD)
+                .map_or_else(
+                    || output.to_string(),
+                    |(i, _)| format!("{}\u{2026}", &output[..i]),
+                )
         }
     } else {
         output.to_string()

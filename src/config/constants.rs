@@ -71,7 +71,6 @@ pub const SYNTAX_ALIASES: &[(&str, &str)] = &[
     ("mjs", "js"),
     ("cjs", "js"),
     ("jsx", "js"),
-    ("tsx", "ts"),
     ("yml", "yaml"),
     ("mdx", "md"),
 ];
