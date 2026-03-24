@@ -31,6 +31,8 @@ pub(crate) struct ChatState {
     pub chat_box: gtk::Box,
     /// ScrolledWindow wrapping `chat_box`.
     pub scrolled: gtk::ScrolledWindow,
+    /// "Load previous messages" button at the top of `chat_box`.
+    pub load_prev_btn: gtk::Button,
     /// Index of the oldest history entry currently rendered.
     /// Entries `[oldest_rendered_idx .. history.len())` have widgets in the box.
     pub oldest_rendered_idx: usize,

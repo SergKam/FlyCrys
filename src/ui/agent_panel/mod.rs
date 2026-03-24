@@ -24,6 +24,10 @@ use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
 /// How many history entries to show initially / per "Load previous" click.
 const PAGE_SIZE: usize = 20;
 
+/// Maximum message widgets kept in the chat box.  Beyond this the oldest
+/// are removed to keep layout and memory light.
+const MAX_VISIBLE_WIDGETS: usize = PAGE_SIZE * 2;
+
 struct AttachedImage {
     bytes: Vec<u8>,
     mime_type: String,
@@ -229,6 +233,7 @@ pub fn create_agent_panel(
         chat: ChatState {
             chat_box: chat_box.clone(),
             scrolled: scrolled.clone(),
+            load_prev_btn: load_prev_btn.clone(),
             oldest_rendered_idx: total_history, // nothing rendered yet
             current_streaming_entry: None,
             current_text: String::new(),
@@ -460,13 +465,14 @@ pub fn create_agent_panel(
                 ChatEntry::new_user_with_images(&text, textures)
             };
             {
-                let s = state.borrow();
+                let mut s = state.borrow_mut();
                 let widget = chat_factory::build_and_cache_widget(
                     &user_entry,
                     &s.on_open_file,
                     s.config.theme.get().is_dark(),
                 );
                 s.chat.chat_box.append(&widget);
+                trim_chat_if_needed(&mut s.chat);
             }
             scroll_to_bottom(&scrolled);
 
@@ -807,6 +813,40 @@ pub(super) fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
         let adj = sc.vadjustment();
         adj.set_value(adj.upper() - adj.page_size());
     });
+}
+
+/// Remove the oldest visible message widgets when the count exceeds
+/// `MAX_VISIBLE_WIDGETS`.  Keeps the "Load previous" button intact and
+/// updates `oldest_rendered_idx` so history can still be loaded.
+pub(super) fn trim_chat_if_needed(chat: &mut ChatState) {
+    let btn_widget: gtk::Widget = chat.load_prev_btn.clone().upcast();
+
+    // Count message widgets (everything after the button).
+    let mut count: usize = 0;
+    let mut child = btn_widget.next_sibling();
+    while let Some(w) = child {
+        count += 1;
+        child = w.next_sibling();
+    }
+
+    let excess = count.saturating_sub(MAX_VISIBLE_WIDGETS);
+    if excess == 0 {
+        return;
+    }
+
+    // Remove `excess` widgets from the front (oldest messages).
+    let mut child = btn_widget.next_sibling();
+    for _ in 0..excess {
+        if let Some(w) = child {
+            let next = w.next_sibling();
+            chat.chat_box.remove(&w);
+            child = next;
+        }
+    }
+    chat.oldest_rendered_idx += excess;
+
+    // There are now hidden older entries — make the button reachable.
+    chat.load_prev_btn.set_visible(true);
 }
 
 /// Convert a persisted ChatMessage into a ChatEntry.

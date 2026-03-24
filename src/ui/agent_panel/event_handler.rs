@@ -12,7 +12,10 @@ use crate::services::cli::AgentDomainEvent;
 
 use super::chat_factory;
 use super::state::PanelState;
-use super::{extract_file_path, extract_tool_display, format_token_count, scroll_to_bottom};
+use super::{
+    extract_file_path, extract_tool_display, format_token_count, scroll_to_bottom,
+    trim_chat_if_needed,
+};
 
 /// Handle a single domain event from the agent backend.
 pub(crate) fn handle_domain_event(
@@ -51,6 +54,7 @@ pub(crate) fn handle_domain_event(
                 s.chat.chat_box.append(&widget);
                 s.chat.current_streaming_entry = Some(entry);
                 s.chat.current_text.clear();
+                trim_chat_if_needed(&mut s.chat);
             }
             s.chat.current_text.push_str(&text);
             if let Some(ref entry) = s.chat.current_streaming_entry {
@@ -122,6 +126,7 @@ pub(crate) fn handle_domain_event(
 
             s.chat.current_streaming_entry = None;
             s.chat.current_text.clear();
+            trim_chat_if_needed(&mut s.chat);
             let scrolled = s.chat.scrolled.clone();
             drop(s);
             scroll_to_bottom(&scrolled);
@@ -237,6 +242,7 @@ pub(crate) fn handle_domain_event(
                     s.config.theme.get().is_dark(),
                 );
                 s.chat.chat_box.append(&widget);
+                trim_chat_if_needed(&mut s.chat);
             }
             s.tab_spinner.set_spinning(false);
 
@@ -318,7 +324,7 @@ pub(crate) fn handle_domain_event(
         }
 
         AgentDomainEvent::ProcessError(msg) => {
-            let s = state.borrow_mut();
+            let mut s = state.borrow_mut();
             let entry = ChatEntry::new_system(&format!("\u{26a0} {msg}"));
             let widget = chat_factory::build_and_cache_widget(
                 &entry,
@@ -326,6 +332,7 @@ pub(crate) fn handle_domain_event(
                 s.config.theme.get().is_dark(),
             );
             s.chat.chat_box.append(&widget);
+            trim_chat_if_needed(&mut s.chat);
             let scrolled = s.chat.scrolled.clone();
             drop(s);
             scroll_to_bottom(&scrolled);
