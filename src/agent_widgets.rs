@@ -156,6 +156,10 @@ pub fn create_tool_call(
             tool_input_hint.to_string()
         };
         let label = gtk::Label::new(Some(&format!("{tool_name}({short})")));
+        // Show full command on hover when truncated.
+        if tool_input_hint.chars().count() > DISPLAY_TRUNCATE_AT {
+            label.set_tooltip_text(Some(&format!("{tool_name}({tool_input_hint})")));
+        }
         header.append(&label);
     }
 
@@ -186,6 +190,25 @@ pub fn create_tool_call(
     (container, triangle_label, content_box, spinner)
 }
 
+/// Extract the full human-readable command / input from tool_input JSON.
+fn extract_full_command(tool_name: &str, tool_input: &str) -> String {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(tool_input) {
+        // Bash: show full command
+        if let Some(cmd) = val.get("command").and_then(|v| v.as_str()) {
+            return format!("$ {cmd}");
+        }
+        // Read/Write: show file_path
+        if let Some(fp) = val.get("file_path").and_then(|v| v.as_str()) {
+            return format!("{tool_name}: {fp}");
+        }
+        // Grep/search: show pattern
+        if let Some(pat) = val.get("pattern").and_then(|v| v.as_str()) {
+            return format!("{tool_name}: {pat}");
+        }
+    }
+    String::new()
+}
+
 fn escape_markup(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -212,7 +235,21 @@ pub fn render_tool_output(
     tool_name: &str,
     tool_input: &str,
 ) {
-    // No output — nothing to render
+    // Show the full command / input at the top so the user can read & copy it.
+    let full_cmd = extract_full_command(tool_name, tool_input);
+    if !full_cmd.is_empty() {
+        let cmd_label = gtk::Label::new(Some(&full_cmd));
+        cmd_label.set_wrap(true);
+        cmd_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        cmd_label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
+        cmd_label.set_xalign(0.0);
+        cmd_label.set_selectable(true);
+        cmd_label.add_css_class("monospace");
+        cmd_label.set_margin_bottom(4);
+        content_box.append(&cmd_label);
+    }
+
+    // No output — nothing more to render
     if output.trim().is_empty() {
         return;
     }
