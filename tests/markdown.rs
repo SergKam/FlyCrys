@@ -115,10 +115,11 @@ fn md_nested_list() {
 fn md_link() {
     let out = md_to_pango_light("[click](https://example.com)");
     assert!(
-        out.contains("underline"),
-        "link should be underlined: {out}"
+        out.contains("<a href=\"https://example.com\">"),
+        "link should use <a> tag: {out}"
     );
     assert!(out.contains("click"), "link text present: {out}");
+    assert!(out.contains("</a>"), "link should close </a>: {out}");
 }
 
 #[test]

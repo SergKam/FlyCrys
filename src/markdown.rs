@@ -221,11 +221,10 @@ pub fn md_to_widget_box(md: &str, is_dark: bool, on_open_file: OpenFileCb<'_>) -
             Event::End(TagEnd::Strikethrough) => buf.push_str("</s>"),
 
             Event::Start(Tag::Link { dest_url, .. }) => {
-                buf.push_str("<span foreground=\"#4a90d9\" underline=\"single\"><i>[");
-                let _ = dest_url;
+                buf.push_str(&format!("<a href=\"{}\">", escape_pango(&dest_url)));
             }
             Event::End(TagEnd::Link) => {
-                buf.push_str("]</i></span>");
+                buf.push_str("</a>");
             }
 
             // ── Text content ───────────────────────────────────────
@@ -560,9 +559,8 @@ pub fn md_to_pango(md: &str, is_dark: bool) -> String {
                     out.push_str(&format!("{indent}• "));
                 }
                 Tag::Link { dest_url, .. } => {
-                    out.push_str("<span foreground=\"#4a90d9\" underline=\"single\"><i>[");
-                    let _ = dest_url;
-                    open_tags.push("]</i></span>");
+                    out.push_str(&format!("<a href=\"{}\">", escape_pango(&dest_url)));
+                    open_tags.push("</a>");
                 }
                 Tag::BlockQuote(_) => {
                     out.push_str("<span foreground=\"#888888\">│ ");
@@ -623,7 +621,7 @@ pub fn md_to_pango(md: &str, is_dark: bool) -> String {
                 }
                 TagEnd::Link => {
                     open_tags.pop();
-                    out.push_str("]</i></span>");
+                    out.push_str("</a>");
                 }
                 TagEnd::BlockQuote(_) => {
                     open_tags.pop();
