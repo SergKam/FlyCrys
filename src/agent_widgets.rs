@@ -56,7 +56,7 @@ pub fn create_assistant_text() -> (gtk::Box, gtk::Label) {
     (container, label)
 }
 
-/// Update assistant label with markdown-rendered content
+/// Update assistant label with markdown-rendered content (streaming / single label).
 pub fn update_assistant_text(label: &gtk::Label, raw_md: &str, is_dark: bool) {
     let markup = crate::markdown::md_to_pango(raw_md, is_dark);
     // Validate markup first; if invalid, fall back to plain text so content is never lost
@@ -65,6 +65,23 @@ pub fn update_assistant_text(label: &gtk::Label, raw_md: &str, is_dark: bool) {
     } else {
         label.set_text(raw_md);
     }
+}
+
+/// Replace the streaming label inside `container` with widget-per-block markdown.
+///
+/// Called when streaming finishes or when building history entries.
+pub fn finalize_assistant_text(
+    container: &gtk::Box,
+    raw_md: &str,
+    is_dark: bool,
+    on_open_file: &Rc<dyn Fn(&str)>,
+) {
+    // Remove all existing children (the streaming label).
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let block = crate::markdown::md_to_widget_box(raw_md, is_dark, Some(on_open_file));
+    container.append(&block);
 }
 
 /// Tool call panel: clickable header with triangle + spinner + tool info.

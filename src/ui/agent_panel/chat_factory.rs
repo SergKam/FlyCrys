@@ -49,6 +49,16 @@ fn build_assistant_widget(
     on_open_file: &Rc<dyn Fn(&str)>,
     is_dark: bool,
 ) -> gtk::Widget {
+    let text = entry.text();
+
+    // Non-streaming entries (history / completed) → widget-per-block.
+    if !entry.is_streaming() && !text.is_empty() {
+        let (container, _label) = agent_widgets::create_assistant_text();
+        agent_widgets::finalize_assistant_text(&container, &text, is_dark, on_open_file);
+        return container.upcast();
+    }
+
+    // Streaming entry → single label for fast updates.
     let (container, label) = agent_widgets::create_assistant_text();
 
     let cb = on_open_file.clone();
@@ -61,7 +71,6 @@ fn build_assistant_widget(
         }
     });
 
-    let text = entry.text();
     if !text.is_empty() {
         agent_widgets::update_assistant_text(&label, &text, is_dark);
     }

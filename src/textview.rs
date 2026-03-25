@@ -292,19 +292,13 @@ pub fn load_preview(preview_scroll: &gtk::ScrolledWindow, file_path: &str, is_da
     match is_previewable(file_path) {
         PreviewKind::Markdown => {
             if let Ok(content) = std::fs::read_to_string(file_path) {
-                let markup = markdown::md_to_pango(&content, is_dark);
-                let label = gtk::Label::new(None);
-                label.set_markup(&markup);
-                label.set_wrap(true);
-                label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
-                label.set_selectable(true);
-                label.set_xalign(0.0);
-                label.set_valign(gtk::Align::Start);
-                label.set_margin_start(12);
-                label.set_margin_end(12);
-                label.set_margin_top(8);
-                label.set_margin_bottom(8);
-                preview_scroll.set_child(Some(&label));
+                let widget_box = markdown::md_to_widget_box(&content, is_dark, None);
+                widget_box.set_valign(gtk::Align::Start);
+                widget_box.set_margin_start(12);
+                widget_box.set_margin_end(12);
+                widget_box.set_margin_top(8);
+                widget_box.set_margin_bottom(8);
+                preview_scroll.set_child(Some(&widget_box));
             }
         }
         PreviewKind::Image => {

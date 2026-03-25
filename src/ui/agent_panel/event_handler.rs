@@ -76,6 +76,19 @@ pub(crate) fn handle_domain_event(
             let mut s = state.borrow_mut();
             if let Some(ref entry) = s.chat.current_streaming_entry {
                 entry.set_is_streaming(false);
+                // Swap the streaming label for widget-per-block markdown.
+                if !full_text.is_empty()
+                    && let Some(widget) = entry.cached_widget()
+                    && let Some(container) = widget.downcast_ref::<gtk::Box>()
+                {
+                    agent_widgets::finalize_assistant_text(
+                        container,
+                        &full_text,
+                        s.config.theme.get().is_dark(),
+                        &s.on_open_file,
+                    );
+                }
+                entry.set_text_label(None);
             }
             if !full_text.is_empty() {
                 s.chat
