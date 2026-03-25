@@ -57,10 +57,6 @@ fn light_css() -> &'static str {
         margin-bottom: 4px;
     }
     .md-blockquote label { color: #656d76; }
-    .md-table {
-        margin-top: 6px;
-        margin-bottom: 6px;
-    }
     .md-table-header-cell {
         background-color: #f6f8fa;
         padding: 6px 12px;
@@ -123,10 +119,6 @@ fn dark_css() -> &'static str {
         margin-bottom: 4px;
     }
     .md-blockquote label { color: #9e9e9e; }
-    .md-table {
-        margin-top: 6px;
-        margin-bottom: 6px;
-    }
     .md-table-header-cell {
         background-color: #333333;
         padding: 6px 12px;

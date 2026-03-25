@@ -404,9 +404,12 @@ fn build_code_block(code: &str, _lang: &str, _is_dark: bool, container: &gtk::Bo
 /// Build a table from accumulated header + body rows.
 fn build_table(t: &TableBuilder, container: &gtk::Box, on_open_file: OpenFileCb<'_>) {
     let grid = gtk::Grid::new();
-    grid.add_css_class("md-table");
     grid.set_column_spacing(0);
     grid.set_row_spacing(0);
+    grid.set_margin_top(6);
+    grid.set_margin_bottom(6);
+    // Clip horizontally so wide tables don't inflate parent min-width.
+    grid.set_overflow(gtk::Overflow::Hidden);
 
     // Header row
     for (col, markup) in t.header.iter().enumerate() {
@@ -422,15 +425,7 @@ fn build_table(t: &TableBuilder, container: &gtk::Box, on_open_file: OpenFileCb<
         }
     }
 
-    // Horizontal scroll for wide tables; don't propagate width or expand vertically.
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
-    scroll.set_propagate_natural_width(false);
-    scroll.set_vexpand(false);
-    scroll.set_child(Some(&grid));
-    scroll.set_margin_top(6);
-    scroll.set_margin_bottom(6);
-    container.append(&scroll);
+    container.append(&grid);
 }
 
 /// Build a single table cell widget.
