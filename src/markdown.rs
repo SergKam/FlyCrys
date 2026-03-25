@@ -5,8 +5,51 @@ use std::rc::Rc;
 
 /// Shorthand for the optional file-open callback threaded through widget builders.
 type OpenFileCb<'a> = Option<&'a Rc<dyn Fn(&str)>>;
+/// Owned version of the above for `'static` closures (idle callbacks).
+type OpenFileCbOwned = Option<Rc<dyn Fn(&str)>>;
 
 // ─── Widget-per-block renderer (history, file preview, post-stream) ─────────
+
+/// Threshold (in bytes) for splitting long markdown into deferred batches.
+const DEFERRED_SPLIT_BYTES: usize = 3000;
+
+/// Like [`md_to_widget_box`] but defers rendering of long documents.
+///
+/// The first ~3 KB of markdown is rendered immediately; the remainder is
+/// built in an idle callback so the UI stays responsive.
+pub fn md_to_widget_box_deferred(
+    md: &str,
+    is_dark: bool,
+    on_open_file: OpenFileCb<'_>,
+) -> gtk::Box {
+    if md.len() <= DEFERRED_SPLIT_BYTES {
+        return md_to_widget_box(md, is_dark, on_open_file);
+    }
+
+    // Split at a paragraph boundary (blank line) near the threshold.
+    let split = md[..DEFERRED_SPLIT_BYTES]
+        .rfind("\n\n")
+        .map(|p| p + 2) // include the blank line in the first chunk
+        .unwrap_or(DEFERRED_SPLIT_BYTES);
+    let (first, rest) = md.split_at(split);
+
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let first_box = md_to_widget_box(first, is_dark, on_open_file);
+    root.append(&first_box);
+
+    if !rest.trim().is_empty() {
+        let rest_owned = rest.to_string();
+        let root_clone = root.clone();
+        let cb: OpenFileCbOwned = on_open_file.map(Rc::clone);
+        gtk::glib::idle_add_local_once(move || {
+            // Recursively defer if the remainder is still large.
+            let rest_box = md_to_widget_box_deferred(&rest_owned, is_dark, cb.as_ref());
+            root_clone.append(&rest_box);
+        });
+    }
+
+    root
+}
 
 /// Build a vertical Box of properly styled widgets from markdown.
 ///
@@ -326,7 +369,7 @@ fn flush_heading(
     buf.clear();
 }
 
-/// Build a code block widget — monospace text inside a styled box.
+/// Build a code block widget — monospace label inside a horizontally-scrollable box.
 fn build_code_block(code: &str, _lang: &str, _is_dark: bool, container: &gtk::Box) {
     let code_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     code_box.add_css_class("md-code-block");
@@ -335,13 +378,11 @@ fn build_code_block(code: &str, _lang: &str, _is_dark: bool, container: &gtk::Bo
 
     let label = gtk::Label::new(None);
     label.add_css_class("md-code-label");
-    label.set_wrap(true);
-    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
+    // Don't wrap code — let it scroll horizontally for long lines.
+    label.set_wrap(false);
     label.set_xalign(0.0);
     label.set_selectable(true);
     label.set_use_markup(true);
-    label.set_hexpand(true);
 
     let markup = format!(
         "<span font_family=\"monospace\">{}</span>",
@@ -349,7 +390,14 @@ fn build_code_block(code: &str, _lang: &str, _is_dark: bool, container: &gtk::Bo
     );
     set_markup_safe(&label, &markup);
 
-    code_box.append(&label);
+    // Horizontal scroll for wide code; don't propagate width to parent.
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    scroll.set_propagate_natural_width(false);
+    scroll.set_vexpand(false);
+    scroll.set_child(Some(&label));
+
+    code_box.append(&scroll);
     container.append(&code_box);
 }
 
@@ -374,9 +422,11 @@ fn build_table(t: &TableBuilder, container: &gtk::Box, on_open_file: OpenFileCb<
         }
     }
 
-    // Wrap in a scrollable container for wide tables
+    // Horizontal scroll for wide tables; don't propagate width or expand vertically.
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    scroll.set_propagate_natural_width(false);
+    scroll.set_vexpand(false);
     scroll.set_child(Some(&grid));
     scroll.set_margin_top(6);
     scroll.set_margin_bottom(6);

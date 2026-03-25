@@ -80,7 +80,7 @@ pub fn finalize_assistant_text(
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }
-    let block = crate::markdown::md_to_widget_box(raw_md, is_dark, Some(on_open_file));
+    let block = crate::markdown::md_to_widget_box_deferred(raw_md, is_dark, Some(on_open_file));
     container.append(&block);
 }
 

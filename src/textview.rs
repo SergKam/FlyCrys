@@ -292,7 +292,7 @@ pub fn load_preview(preview_scroll: &gtk::ScrolledWindow, file_path: &str, is_da
     match is_previewable(file_path) {
         PreviewKind::Markdown => {
             if let Ok(content) = std::fs::read_to_string(file_path) {
-                let widget_box = markdown::md_to_widget_box(&content, is_dark, None);
+                let widget_box = markdown::md_to_widget_box_deferred(&content, is_dark, None);
                 widget_box.set_valign(gtk::Align::Start);
                 widget_box.set_margin_start(12);
                 widget_box.set_margin_end(12);
