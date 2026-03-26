@@ -122,34 +122,3 @@ pub const HIGHLIGHTABLE_EXTENSIONS: &[&str] = &[
     "makefile",
     "lua",
 ];
-
-/// Quick command definition.
-pub struct QuickCommand {
-    pub label: &'static str,
-    pub action_name: &'static str,
-    pub prompt: &'static str,
-}
-
-/// Quick commands for the agent panel menu.
-pub const QUICK_COMMANDS: &[QuickCommand] = &[
-    QuickCommand {
-        label: "Commit changes",
-        action_name: "quick-commit",
-        prompt: "commit all changes with a meaningful message",
-    },
-    QuickCommand {
-        label: "Create GitHub PR",
-        action_name: "quick-pr",
-        prompt: "create a pull request for current branch",
-    },
-    QuickCommand {
-        label: "Update documentation",
-        action_name: "quick-docs",
-        prompt: "update documentation to reflect recent changes",
-    },
-    QuickCommand {
-        label: "Run lint, build, tests",
-        action_name: "quick-test",
-        prompt: "run lint, build, and tests, fix any errors",
-    },
-];

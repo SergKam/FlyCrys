@@ -5,6 +5,7 @@ pub mod ui;
 
 pub mod agent_config_dialog;
 pub mod agent_widgets;
+pub mod bookmark_dialog;
 pub mod chat_entry;
 pub mod chat_webview;
 pub mod file_entry;

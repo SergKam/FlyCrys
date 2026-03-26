@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::models::{AgentConfig, AppConfig, ChatMessage, WorkspaceConfig};
+use crate::models::{AgentConfig, AppConfig, Bookmark, ChatMessage, WorkspaceConfig};
 
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
@@ -143,6 +143,55 @@ pub fn list_agent_configs() -> Vec<AgentConfig> {
     }
     configs.sort_by(|a, b| a.name.cmp(&b.name));
     configs
+}
+
+// --- Bookmark persistence ---
+
+fn bookmarks_path() -> PathBuf {
+    config_dir().join("bookmarks.json")
+}
+
+pub fn load_bookmarks() -> Vec<Bookmark> {
+    let path = bookmarks_path();
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn save_bookmarks(bookmarks: &[Bookmark]) {
+    let _ = fs::create_dir_all(config_dir());
+    if let Ok(data) = serde_json::to_string_pretty(bookmarks) {
+        let _ = fs::write(bookmarks_path(), data);
+    }
+}
+
+/// Seed default bookmarks if none exist yet.
+pub fn ensure_default_bookmarks() {
+    let path = bookmarks_path();
+    if path.exists() {
+        return;
+    }
+    let defaults = vec![
+        Bookmark {
+            name: "Commit changes".into(),
+            prompt: "commit all changes with a meaningful message".into(),
+        },
+        Bookmark {
+            name: "Create GitHub PR".into(),
+            prompt: "create a pull request for current branch".into(),
+        },
+        Bookmark {
+            name: "Update documentation".into(),
+            prompt: "update documentation to reflect recent changes".into(),
+        },
+        Bookmark {
+            name: "Run lint, build, tests".into(),
+            prompt: "run lint, build, and tests, fix any errors".into(),
+        },
+    ];
+    save_bookmarks(&defaults);
 }
 
 /// Create predefined agent profiles if they don't exist yet

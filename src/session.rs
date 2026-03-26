@@ -23,3 +23,8 @@ pub use crate::services::storage::save_app_config;
 pub use crate::services::storage::save_chat_history;
 pub use crate::services::storage::save_workspace_config;
 pub use crate::services::storage::terminal_content_path;
+
+pub use crate::models::Bookmark;
+pub use crate::services::storage::ensure_default_bookmarks;
+pub use crate::services::storage::load_bookmarks;
+pub use crate::services::storage::save_bookmarks;

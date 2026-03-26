@@ -152,6 +152,7 @@ struct AppState {
 
 fn build_ui(app: &gtk::Application) {
     session::ensure_default_agents();
+    session::ensure_default_bookmarks();
     let mut app_config = session::load_app_config();
 
     // Theme state

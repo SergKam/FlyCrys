@@ -148,16 +148,29 @@ pub fn create_agent_panel(
     compact_btn.set_has_frame(false);
 
     let quick_menu = gio::Menu::new();
-    for cmd in crate::config::constants::QUICK_COMMANDS {
-        quick_menu.append(Some(cmd.label), Some(&format!("panel.{}", cmd.action_name)));
-    }
-
     let quick_btn = gtk::MenuButton::new();
-    quick_btn.set_icon_name("view-more-symbolic");
-    quick_btn.set_tooltip_text(Some("Quick commands"));
+    quick_btn.set_icon_name("user-bookmarks-symbolic");
+    quick_btn.set_tooltip_text(Some("Bookmarks"));
     quick_btn.set_has_frame(false);
     quick_btn.set_direction(gtk::ArrowType::Up);
     quick_btn.set_menu_model(Some(&quick_menu));
+
+    // Populate bookmark menu from disk (also called after dialog save).
+    fn rebuild_bookmark_menu(menu: &gio::Menu) {
+        menu.remove_all();
+        let bookmarks_section = gio::Menu::new();
+        for (i, bm) in crate::session::load_bookmarks().iter().enumerate() {
+            bookmarks_section.append(Some(&bm.name), Some(&format!("panel.bookmark-{i}")));
+        }
+        menu.append_section(None, &bookmarks_section);
+
+        let config_section = gio::Menu::new();
+        let config_item = gio::MenuItem::new(Some("Configure…"), Some("panel.bookmark-configure"));
+        config_item.set_icon(&gio::ThemedIcon::new("emblem-system-symbolic"));
+        config_section.append_item(&config_item);
+        menu.append_section(None, &config_section);
+    }
+    rebuild_bookmark_menu(&quick_menu);
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -608,20 +621,71 @@ pub fn create_agent_panel(
         });
     }
 
-    // Quick command actions
+    // Bookmark actions — dynamic based on loaded bookmarks
     {
         let action_group = gio::SimpleActionGroup::new();
-        for cmd in crate::config::constants::QUICK_COMMANDS {
-            let action = gio::SimpleAction::new(cmd.action_name, None);
+
+        // Register actions for each bookmark (bookmark-0, bookmark-1, …)
+        let bookmarks = crate::session::load_bookmarks();
+        for (i, bm) in bookmarks.iter().enumerate() {
+            let action = gio::SimpleAction::new(&format!("bookmark-{i}"), None);
             let iv = input_view.clone();
             let ds = do_send.clone();
-            let text = cmd.prompt.to_string();
+            let text = bm.prompt.clone();
             action.connect_activate(move |_, _| {
                 iv.buffer().set_text(&text);
                 ds();
             });
             action_group.add_action(&action);
         }
+
+        // "Configure…" action — opens bookmark editor dialog
+        let configure_action = gio::SimpleAction::new("bookmark-configure", None);
+        {
+            let panel_ref = panel.clone();
+            let quick_menu = quick_menu.clone();
+            let action_group = action_group.clone();
+            let input_view = input_view.clone();
+            let do_send = do_send.clone();
+            configure_action.connect_activate(move |_, _| {
+                let win = panel_ref
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let Some(win) = win.as_ref() else { return };
+
+                let qm = quick_menu.clone();
+                let ag = action_group.clone();
+                let iv = input_view.clone();
+                let ds = do_send.clone();
+                crate::bookmark_dialog::show(win, move |new_bookmarks| {
+                    // Re-register all bookmark actions with updated prompts
+                    // First remove old bookmark-N actions
+                    for i in 0..200 {
+                        let name = format!("bookmark-{i}");
+                        if ag.lookup_action(&name).is_some() {
+                            ag.remove_action(&name);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    for (i, bm) in new_bookmarks.iter().enumerate() {
+                        let action = gio::SimpleAction::new(&format!("bookmark-{i}"), None);
+                        let iv = iv.clone();
+                        let ds = ds.clone();
+                        let text = bm.prompt.clone();
+                        action.connect_activate(move |_, _| {
+                            iv.buffer().set_text(&text);
+                            ds();
+                        });
+                        ag.add_action(&action);
+                    }
+
+                    rebuild_bookmark_menu(&qm);
+                });
+            });
+        }
+        action_group.add_action(&configure_action);
         panel.insert_action_group("panel", Some(&action_group));
     }
 
