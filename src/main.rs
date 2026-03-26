@@ -192,10 +192,13 @@ fn build_ui(app: &gtk::Application) {
         Rc::new(move |dark: bool| {
             let new_theme = if dark { Theme::Dark } else { Theme::Light };
             theme.set(new_theme);
-            css.load_from_string(css_for_theme(new_theme));
+            // Update GTK dark-theme preference BEFORE loading our CSS so that
+            // named colours like @window_fg_color resolve against the correct
+            // theme variant.
             if let Some(settings) = gtk::Settings::default() {
                 settings.set_gtk_application_prefer_dark_theme(dark);
             }
+            css.load_from_string(css_for_theme(new_theme));
             app_state.borrow_mut().config.theme = new_theme;
             // Re-highlight only materialised workspaces
             let rehighlighters: Vec<_> = app_state
@@ -214,16 +217,13 @@ fn build_ui(app: &gtk::Application) {
         })
     };
 
-    // Burger menu on the left side of the tab bar
-    {
-        let menu_btn = build_settings_menu(
-            Rc::clone(&theme),
-            Rc::clone(&notification_level),
-            Rc::clone(&app_state),
-            Rc::clone(&on_theme_change),
-        );
-        notebook.set_action_widget(&menu_btn, gtk::PackType::Start);
-    }
+    // Burger menu (built now, placed on the right side below)
+    let menu_btn = build_settings_menu(
+        Rc::clone(&theme),
+        Rc::clone(&notification_level),
+        Rc::clone(&app_state),
+        Rc::clone(&on_theme_change),
+    );
 
     // ── Load workspaces (lazy: only active tab is built) ────────────────
 
@@ -276,11 +276,15 @@ fn build_ui(app: &gtk::Application) {
         app_config.active_tab = active_idx;
     }
 
-    // "+" button to add new workspace
+    // "+" and burger menu on the right side of the tab bar
     let add_btn = gtk::Button::from_icon_name("list-add-symbolic");
     add_btn.set_tooltip_text(Some("New workspace"));
     add_btn.set_has_frame(false);
-    notebook.set_action_widget(&add_btn, gtk::PackType::End);
+
+    let right_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    right_box.append(&add_btn);
+    right_box.append(&menu_btn);
+    notebook.set_action_widget(&right_box, gtk::PackType::End);
 
     add_btn.connect_clicked(glib::clone!(
         #[weak]
@@ -531,6 +535,8 @@ fn build_settings_menu(
                      Claude CLI: {}",
                     claude_version
                 ))
+                .website("https://github.com/SergKam/FlyCrys")
+                .website_label("GitHub")
                 .license_type(gtk::License::MitX11)
                 .modal(true);
 
@@ -544,6 +550,9 @@ fn build_settings_menu(
                 about.set_transient_for(Some(&window));
             }
             about.present();
+
+            // GTK4 pre-selects the program name label; steal focus to deselect it.
+            gtk::prelude::GtkWindowExt::set_focus(&about, gtk::Widget::NONE);
         });
     }
 

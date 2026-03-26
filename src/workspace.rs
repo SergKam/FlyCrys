@@ -498,7 +498,7 @@ impl Workspace {
         cost_label.add_css_class("statusbar-item");
 
         // Agent panel
-        let (agent_panel_1, agent_input_1) = {
+        let (agent_panel_1, agent_input_1, agent_on_theme_change) = {
             let profile = config.borrow().agent_1_profile.clone();
             let session_id = config.borrow().agent_1_session_id.clone();
             let cfg = Rc::clone(&config);
@@ -925,6 +925,7 @@ impl Workspace {
                 }
                 let new_theme = if dark { Theme::Dark } else { Theme::Light };
                 terminal::apply_colors(&vte, new_theme);
+                agent_on_theme_change(dark);
             })
         };
 

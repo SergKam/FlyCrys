@@ -49,7 +49,7 @@ pub fn create_agent_panel(
     token_label: gtk::Label,
     cost_label: gtk::Label,
     agent_name_label: gtk::Label,
-) -> (gtk::Box, gtk::TextView) {
+) -> (gtk::Box, gtk::TextView, Rc<dyn Fn(bool)>) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(AGENT_PANEL_MIN_WIDTH);
 
@@ -832,7 +832,15 @@ pub fn create_agent_panel(
         panel.insert_action_group("panel", Some(&action_group));
     }
 
-    (panel, input_view)
+    // Theme-change callback so the workspace can re-theme the chat WebView.
+    let on_theme_change: Rc<dyn Fn(bool)> = {
+        let state = Rc::clone(&state);
+        Rc::new(move |is_dark: bool| {
+            state.borrow().chat.webview.set_theme(is_dark);
+        })
+    };
+
+    (panel, input_view, on_theme_change)
 }
 
 // ---------------------------------------------------------------------------
