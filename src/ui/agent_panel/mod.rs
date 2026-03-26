@@ -132,9 +132,16 @@ pub fn create_agent_panel(
     toolbar.set_margin_top(2);
     toolbar.set_margin_bottom(6);
 
-    let attach_btn = gtk::Button::from_icon_name("mail-attachment-symbolic");
-    attach_btn.set_tooltip_text(Some("Attach image (Ctrl+V to paste)"));
+    let attach_menu = gio::Menu::new();
+    attach_menu.append(Some("Attach Image…"), Some("panel.attach-image"));
+    attach_menu.append(Some("Select Files…"), Some("panel.pick-files"));
+    attach_menu.append(Some("Select Folder…"), Some("panel.pick-folder"));
+    let attach_btn = gtk::MenuButton::new();
+    attach_btn.set_icon_name("mail-attachment-symbolic");
+    attach_btn.set_tooltip_text(Some("Attach image / insert file path"));
     attach_btn.set_has_frame(false);
+    attach_btn.set_direction(gtk::ArrowType::Up);
+    attach_btn.set_menu_model(Some(&attach_menu));
 
     let pause_btn = gtk::Button::from_icon_name("media-playback-pause-symbolic");
     pause_btn.set_tooltip_text(Some("Pause"));
@@ -348,54 +355,7 @@ pub fn create_agent_panel(
         });
     }
 
-    // --- Attach button: file chooser ---
-    {
-        let att = Rc::clone(&attachments);
-        let bar = attach_bar.clone();
-        attach_btn.connect_clicked(move |btn| {
-            let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Images"));
-            for mime in crate::config::constants::SUPPORTED_IMAGE_MIME {
-                filter.add_mime_type(mime);
-            }
-
-            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
-            filters.append(&filter);
-
-            let dialog = gtk::FileDialog::builder()
-                .title("Attach Image")
-                .modal(true)
-                .build();
-            dialog.set_filters(Some(&filters));
-            dialog.set_default_filter(Some(&filter));
-
-            let window = btn.root().and_downcast::<gtk::Window>();
-            let att = Rc::clone(&att);
-            let bar = bar.clone();
-
-            dialog.open(
-                window.as_ref(),
-                None::<&gtk::gio::Cancellable>,
-                move |result| {
-                    if let Ok(file) = result
-                        && let Some(path) = file.path()
-                        && let Ok(bytes) = std::fs::read(&path)
-                    {
-                        let mime = mime_for_path(&path);
-                        let gbytes = glib::Bytes::from(&bytes);
-                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                            att.borrow_mut().push(AttachedImage {
-                                bytes,
-                                mime_type: mime,
-                                texture,
-                            });
-                            rebuild_attach_bar(&att, &bar);
-                        }
-                    }
-                },
-            );
-        });
-    }
+    // (Attach image / file / folder picker actions are registered in the action group below.)
 
     // --- Send handler ---
     let do_send = {
@@ -678,6 +638,118 @@ pub fn create_agent_panel(
             });
         }
         action_group.add_action(&configure_action);
+
+        // Attach image action
+        let attach_image_action = gio::SimpleAction::new("attach-image", None);
+        {
+            let att = Rc::clone(&attachments);
+            let bar = attach_bar.clone();
+            let panel_ref = panel.clone();
+            attach_image_action.connect_activate(move |_, _| {
+                let filter = gtk::FileFilter::new();
+                filter.set_name(Some("Images"));
+                for mime in crate::config::constants::SUPPORTED_IMAGE_MIME {
+                    filter.add_mime_type(mime);
+                }
+                let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter);
+
+                let dialog = gtk::FileDialog::builder()
+                    .title("Attach Image")
+                    .modal(true)
+                    .build();
+                dialog.set_filters(Some(&filters));
+                dialog.set_default_filter(Some(&filter));
+
+                let window = panel_ref.root().and_downcast::<gtk::Window>();
+                let att = Rc::clone(&att);
+                let bar = bar.clone();
+                dialog.open(
+                    window.as_ref(),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        if let Ok(file) = result
+                            && let Some(path) = file.path()
+                            && let Ok(bytes) = std::fs::read(&path)
+                        {
+                            let mime = mime_for_path(&path);
+                            let gbytes = glib::Bytes::from(&bytes);
+                            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                                att.borrow_mut().push(AttachedImage {
+                                    bytes,
+                                    mime_type: mime,
+                                    texture,
+                                });
+                                rebuild_attach_bar(&att, &bar);
+                            }
+                        }
+                    },
+                );
+            });
+        }
+        action_group.add_action(&attach_image_action);
+
+        // File/folder picker actions
+        fn insert_paths(iv: &gtk::TextView, files: &gtk::gio::ListModel) {
+            let buf = iv.buffer();
+            let mut end = buf.end_iter();
+            for i in 0..files.n_items() {
+                if let Some(obj) = files.item(i)
+                    && let Ok(file) = obj.downcast::<gtk::gio::File>()
+                    && let Some(path) = file.path()
+                {
+                    let text = buf.text(&buf.start_iter(), &end, false);
+                    if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
+                        buf.insert(&mut end, " ");
+                    }
+                    buf.insert(&mut end, &path.to_string_lossy());
+                }
+            }
+            iv.grab_focus();
+        }
+
+        let pick_files_action = gio::SimpleAction::new("pick-files", None);
+        {
+            let iv = input_view.clone();
+            let panel_ref = panel.clone();
+            pick_files_action.connect_activate(move |_, _| {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Select files")
+                    .modal(true)
+                    .build();
+                let window = panel_ref.root().and_downcast::<gtk::Window>();
+                let iv = iv.clone();
+                dialog.open_multiple(window.as_ref(), None::<&gtk::gio::Cancellable>, move |r| {
+                    if let Ok(files) = r {
+                        insert_paths(&iv, &files);
+                    }
+                });
+            });
+        }
+        action_group.add_action(&pick_files_action);
+
+        let pick_folder_action = gio::SimpleAction::new("pick-folder", None);
+        {
+            let iv = input_view.clone();
+            let panel_ref = panel.clone();
+            pick_folder_action.connect_activate(move |_, _| {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Select folder")
+                    .modal(true)
+                    .build();
+                let window = panel_ref.root().and_downcast::<gtk::Window>();
+                let iv = iv.clone();
+                dialog.select_folder(window.as_ref(), None::<&gtk::gio::Cancellable>, move |r| {
+                    if let Ok(file) = r {
+                        let list = gtk::gio::ListStore::new::<gtk::gio::File>();
+                        list.append(&file);
+                        insert_paths(&iv, list.upcast_ref());
+                    }
+                });
+            });
+        }
+        action_group.add_action(&pick_folder_action);
+
         panel.insert_action_group("panel", Some(&action_group));
     }
 
