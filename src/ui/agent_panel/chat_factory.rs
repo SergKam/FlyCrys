@@ -4,22 +4,47 @@ use crate::models::chat::ChatMessage;
 
 use super::{extract_file_path, extract_tool_display};
 
-/// Convert a ChatMessage to an HTML string and inject it into the webview.
-///
-/// This replaces the old GTK widget factory; all rendering is now HTML-based.
+/// Append a history message at the bottom of the chat (normal order).
 pub(super) fn render_history_message(
     webview: &crate::chat_webview::ChatWebView,
     msg: &ChatMessage,
     is_dark: bool,
 ) {
+    inject_message(webview, msg, is_dark, false);
+}
+
+/// Prepend a history message at the top of the chat (for "Load previous").
+pub(super) fn render_history_message_prepend(
+    webview: &crate::chat_webview::ChatWebView,
+    msg: &ChatMessage,
+    is_dark: bool,
+) {
+    inject_message(webview, msg, is_dark, true);
+}
+
+fn inject_message(
+    webview: &crate::chat_webview::ChatWebView,
+    msg: &ChatMessage,
+    is_dark: bool,
+    prepend: bool,
+) {
     match msg {
         ChatMessage::User { text } => {
-            webview.append_user_message(text, &[]);
+            if prepend {
+                let escaped = markdown::escape_html(text);
+                webview.prepend_html(&format!("<div class=\"msg user-msg\">{escaped}</div>"));
+            } else {
+                webview.append_user_message(text, &[]);
+            }
         }
         ChatMessage::AssistantText { text } => {
             let html = markdown::md_to_html(text, is_dark);
-            let id = webview.begin_stream();
-            webview.finalize_stream(&id, &html);
+            if prepend {
+                webview.prepend_html(&format!("<div class=\"msg assistant-msg\">{html}</div>"));
+            } else {
+                let id = webview.begin_stream();
+                webview.finalize_stream(&id, &html);
+            }
         }
         ChatMessage::ToolCall {
             tool_name,
@@ -28,8 +53,6 @@ pub(super) fn render_history_message(
             is_error,
         } => {
             let file_path = extract_file_path(tool_input);
-            // When a file path is present it's shown as a clickable link,
-            // so don't duplicate it in the hint text.
             let display_hint = if file_path.is_some() {
                 String::new()
             } else {
@@ -46,7 +69,6 @@ pub(super) fn render_history_message(
                 file_path.as_deref(),
             );
 
-            // Mark as complete immediately (history entries are already done).
             webview.tool_complete(&tool_id, *is_error);
 
             if !output.trim().is_empty() {
@@ -55,9 +77,20 @@ pub(super) fn render_history_message(
                 );
                 webview.tool_output(&tool_id, &output_html);
             }
+
+            // For prepend, we used append_tool_call (which uses JS DOM append).
+            // Move the element to the top of #chat.
+            if prepend {
+                webview.move_to_top(&tool_id);
+            }
         }
         ChatMessage::System { text } => {
-            webview.append_system_message(text);
+            if prepend {
+                let escaped = markdown::escape_html(text);
+                webview.prepend_html(&format!("<div class=\"msg system-msg\">{escaped}</div>"));
+            } else {
+                webview.append_system_message(text);
+            }
         }
     }
 }

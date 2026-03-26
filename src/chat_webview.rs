@@ -3,6 +3,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
 
+type LoadPrevCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 use crate::services::platform;
 
 // ---------------------------------------------------------------------------
@@ -241,6 +243,13 @@ function trimOldest(keep) {
     while (c.children.length > keep) c.removeChild(c.firstChild);
 }
 
+function prependToChat(html) {
+    var c = document.getElementById('chat');
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    while (tmp.firstChild) c.insertBefore(tmp.firstChild, c.firstChild);
+}
+
 function showLoadPrev() {
     var el = document.getElementById('load-prev');
     if (el) el.style.display = 'block';
@@ -310,6 +319,8 @@ pub struct ChatWebView {
     pending_js: Rc<RefCell<Vec<String>>>,
     /// `true` once the base HTML document has finished loading.
     ready: Rc<Cell<bool>>,
+    /// Callback fired when the user clicks "Load previous messages".
+    on_load_prev: LoadPrevCb,
 }
 
 impl ChatWebView {
@@ -335,8 +346,11 @@ impl ChatWebView {
         // Transparent background so GTK theme shows through.
         webview.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
 
+        let on_load_prev: LoadPrevCb = Rc::new(RefCell::new(None));
+
         // --- Navigation policy: intercept custom URIs, open http(s) externally ---
         let open_file_cb = on_open_file.clone();
+        let load_prev_cb = Rc::clone(&on_load_prev);
         webview.connect_decide_policy(move |_wv, decision, decision_type| {
             if decision_type != webkit6::PolicyDecisionType::NavigationAction {
                 decision.ignore();
@@ -380,7 +394,9 @@ impl ChatWebView {
 
             if uri.starts_with("flycrys://load-prev") {
                 decision.ignore();
-                eprintln!("[chat_webview] load-prev requested (not yet wired)");
+                if let Some(ref cb) = *load_prev_cb.borrow() {
+                    cb();
+                }
                 return true;
             }
 
@@ -436,6 +452,7 @@ impl ChatWebView {
             msg_counter: Cell::new(0),
             pending_js,
             ready,
+            on_load_prev,
         }
     }
 
@@ -577,6 +594,25 @@ impl ChatWebView {
     /// Hide the "Load previous messages" link.
     pub fn hide_load_prev_button(&self) {
         self.evaluate_js("hideLoadPrev();");
+    }
+
+    /// Move an element by ID to the top of #chat (for prepending tool calls).
+    pub fn move_to_top(&self, id: &str) {
+        let eid = js_escape(id);
+        self.evaluate_js(&format!(
+            "var el=document.getElementById('{eid}');var c=document.getElementById('chat');if(el&&c)c.insertBefore(el,c.firstChild);"
+        ));
+    }
+
+    /// Prepend raw HTML at the top of the chat container (for loading history).
+    pub fn prepend_html(&self, html: &str) {
+        let ehtml = js_escape(html);
+        self.evaluate_js(&format!("prependToChat('{ehtml}');"));
+    }
+
+    /// Register the callback for "Load previous messages" clicks.
+    pub fn set_on_load_prev(&self, cb: Rc<dyn Fn()>) {
+        *self.on_load_prev.borrow_mut() = Some(cb);
     }
 
     // --- Internal helpers ---

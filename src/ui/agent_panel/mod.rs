@@ -257,11 +257,42 @@ pub fn create_agent_panel(
     }
 
     // --- "Load previous" via flycrys://load-prev ---
-    // (The ChatWebView navigation policy intercept for flycrys://load-prev
-    //  is currently a no-op stub. We wire it here via a callback approach.
-    //  For now, the webview link triggers a log message. Full wiring would
-    //  require registering a callback on the ChatWebView, which we skip for
-    //  the initial migration to keep things simple.)
+    {
+        let state_prev = Rc::clone(&state);
+        state
+            .borrow()
+            .chat
+            .webview
+            .set_on_load_prev(Rc::new(move || {
+                let mut s = state_prev.borrow_mut();
+                let current_start = s.chat.oldest_rendered_idx;
+                if current_start == 0 {
+                    s.chat.webview.hide_load_prev_button();
+                    return;
+                }
+                let batch = PAGE_SIZE.min(current_start);
+                let new_start = current_start - batch;
+                let history = s.chat.chat_history.borrow();
+                let dark = s.config.theme.get().is_dark();
+
+                // Prepend older entries (build HTML, inject before existing content).
+                // We use a temporary approach: prepend each message in reverse order
+                // so they end up in the correct chronological order.
+                // The JS `prependMsg` inserts at the top of #chat.
+                for i in (new_start..current_start).rev() {
+                    chat_factory::render_history_message_prepend(
+                        &s.chat.webview,
+                        &history[i],
+                        dark,
+                    );
+                }
+                drop(history);
+                s.chat.oldest_rendered_idx = new_start;
+                if new_start == 0 {
+                    s.chat.webview.hide_load_prev_button();
+                }
+            }));
+    }
 
     // Dropdown selection change
     {
