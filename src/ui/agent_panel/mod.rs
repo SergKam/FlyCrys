@@ -37,7 +37,7 @@ pub fn create_agent_panel(
     notification_level: Rc<Cell<NotificationLevel>>,
     tab_spinner: gtk::Spinner,
     working_dir: &std::path::Path,
-    title_text: &str,
+    _title_text: &str,
     agent_configs: Vec<AgentConfig>,
     initial_profile: &str,
     resume_session_id: Option<String>,
@@ -48,40 +48,60 @@ pub fn create_agent_panel(
     // External labels living in the workspace status bar — the panel updates their text.
     token_label: gtk::Label,
     cost_label: gtk::Label,
+    agent_name_label: gtk::Label,
 ) -> (gtk::Box, gtk::TextView) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(AGENT_PANEL_MIN_WIDTH);
 
-    // Header
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    header.set_margin_start(8);
-    header.set_margin_end(8);
-    header.set_margin_top(6);
-    header.set_margin_bottom(6);
+    // Set initial agent name in status bar
+    if let Some(cfg) = agent_configs.get(
+        agent_configs
+            .iter()
+            .position(|c| c.name == initial_profile)
+            .unwrap_or(0),
+    ) {
+        agent_name_label.set_text(&cfg.name);
+    }
 
-    let title = gtk::Label::new(Some(title_text));
-    title.add_css_class("heading");
-    title.set_xalign(0.0);
-
-    // Agent profile dropdown
-    let profile_names: Vec<&str> = agent_configs.iter().map(|c| c.name.as_str()).collect();
-    let string_list = gtk::StringList::new(&profile_names);
-    let dropdown = gtk::DropDown::new(Some(string_list), gtk::Expression::NONE);
-    dropdown.set_tooltip_text(Some("Agent profile"));
+    // Agent profile menu button (in toolbar, created here for reference)
+    let agent_menu = gio::Menu::new();
+    let agent_btn = gtk::MenuButton::new();
+    agent_btn.set_icon_name("system-users-symbolic");
+    agent_btn.set_has_frame(false);
+    agent_btn.set_direction(gtk::ArrowType::Up);
+    agent_btn.set_menu_model(Some(&agent_menu));
 
     let initial_idx = agent_configs
         .iter()
         .position(|c| c.name == initial_profile)
         .unwrap_or(0);
-    dropdown.set_selected(initial_idx as u32);
 
-    header.append(&title);
-    header.append(&dropdown);
+    // Selected agent index — shared between menu rebuild and action handlers.
+    let selected_agent_idx: Rc<Cell<usize>> = Rc::new(Cell::new(initial_idx));
 
-    let gear_btn = gtk::Button::from_icon_name("emblem-system-symbolic");
-    gear_btn.set_tooltip_text(Some("Configure agents"));
-    gear_btn.set_has_frame(false);
-    header.append(&gear_btn);
+    if let Some(cfg) = agent_configs.get(initial_idx) {
+        agent_btn.set_tooltip_text(Some(&format!("Agent: {}", cfg.name)));
+    }
+    let agent_name_status = agent_name_label.clone();
+
+    fn rebuild_agent_menu(menu: &gio::Menu, configs: &[AgentConfig], selected: usize) {
+        menu.remove_all();
+        let agents_section = gio::Menu::new();
+        for (i, cfg) in configs.iter().enumerate() {
+            let label = if i == selected {
+                format!("\u{2714} {}", cfg.name)
+            } else {
+                format!("   {}", cfg.name)
+            };
+            agents_section.append(Some(&label), Some(&format!("panel.agent-select-{i}")));
+        }
+        menu.append_section(None, &agents_section);
+
+        let config_section = gio::Menu::new();
+        config_section.append(Some("Configure\u{2026}"), Some("panel.agent-configure"));
+        menu.append_section(None, &config_section);
+    }
+    rebuild_agent_menu(&agent_menu, &agent_configs, initial_idx);
 
     // --- Chat area: WebKitGTK WebView ---
     let is_dark = theme.get().is_dark();
@@ -175,9 +195,7 @@ pub fn create_agent_panel(
         menu.append_section(None, &bookmarks_section);
 
         let config_section = gio::Menu::new();
-        let config_item = gio::MenuItem::new(Some("Configure…"), Some("panel.bookmark-configure"));
-        config_item.set_icon(&gio::ThemedIcon::new("emblem-system-symbolic"));
-        config_section.append_item(&config_item);
+        config_section.append(Some("Configure\u{2026}"), Some("panel.bookmark-configure"));
         menu.append_section(None, &config_section);
     }
     rebuild_bookmark_menu(&quick_menu);
@@ -194,11 +212,10 @@ pub fn create_agent_panel(
     toolbar.append(&stop_btn);
     toolbar.append(&compact_btn);
     toolbar.append(&quick_btn);
+    toolbar.append(&agent_btn);
     toolbar.append(&spacer);
     toolbar.append(&send_btn);
 
-    panel.append(&header);
-    panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     panel.append(&webview_widget);
     panel.append(&attach_bar);
     panel.append(&input_frame);
@@ -306,54 +323,7 @@ pub fn create_agent_panel(
             }));
     }
 
-    // Dropdown selection change
-    {
-        let state = Rc::clone(&state);
-        dropdown.connect_selected_notify(move |dd| {
-            let idx = dd.selected() as usize;
-            let mut s = state.borrow_mut();
-            s.config.selected_profile_idx = idx;
-            s.process.session_id = None;
-            (s.on_session_id_change)(None);
-            if let Some(cfg) = s.config.agent_configs.get(idx) {
-                (s.on_profile_change)(&cfg.name);
-            }
-        });
-    }
-
-    // Gear button: open agent config dialog
-    {
-        let state = Rc::clone(&state);
-        let dropdown = dropdown.clone();
-        gear_btn.connect_clicked(move |btn| {
-            let Some(window) = btn.root().and_downcast::<gtk::Window>() else {
-                return;
-            };
-            let state_clone = Rc::clone(&state);
-            let dropdown_clone = dropdown.clone();
-            crate::agent_config_dialog::show(&window, move |new_configs| {
-                let names: Vec<&str> = new_configs.iter().map(|c| c.name.as_str()).collect();
-                let new_model = gtk::StringList::new(&names);
-                dropdown_clone.set_model(Some(&new_model));
-
-                let mut s = state_clone.borrow_mut();
-                let current_name = s
-                    .config
-                    .agent_configs
-                    .get(s.config.selected_profile_idx)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                let new_idx = new_configs
-                    .iter()
-                    .position(|c| c.name == current_name)
-                    .unwrap_or(0);
-
-                s.config.agent_configs = new_configs;
-                s.config.selected_profile_idx = new_idx;
-                dropdown_clone.set_selected(new_idx as u32);
-            });
-        });
-    }
+    // (Agent selection and configure actions are registered in the action group below.)
 
     // (Attach image / file / folder picker actions are registered in the action group below.)
 
@@ -749,6 +719,115 @@ pub fn create_agent_panel(
             });
         }
         action_group.add_action(&pick_folder_action);
+
+        // Agent selection actions (agent-select-0, agent-select-1, …)
+        {
+            let cfgs = state.borrow().config.agent_configs.clone();
+            for i in 0..cfgs.len() {
+                let action = gio::SimpleAction::new(&format!("agent-select-{i}"), None);
+                let state_ref = Rc::clone(&state);
+                let sel = Rc::clone(&selected_agent_idx);
+                let am = agent_menu.clone();
+                let ab = agent_btn.clone();
+                let anl = agent_name_status.clone();
+                action.connect_activate(move |_, _| {
+                    sel.set(i);
+                    let mut s = state_ref.borrow_mut();
+                    s.config.selected_profile_idx = i;
+                    s.process.session_id = None;
+                    (s.on_session_id_change)(None);
+                    if let Some(cfg) = s.config.agent_configs.get(i) {
+                        (s.on_profile_change)(&cfg.name);
+                        ab.set_tooltip_text(Some(&format!("Agent: {}", cfg.name)));
+                        anl.set_text(&cfg.name);
+                    }
+                    rebuild_agent_menu(&am, &s.config.agent_configs, i);
+                });
+                action_group.add_action(&action);
+            }
+        }
+
+        // Agent configure action
+        let agent_configure = gio::SimpleAction::new("agent-configure", None);
+        {
+            let panel_ref = panel.clone();
+            let state_ref = Rc::clone(&state);
+            let am = agent_menu.clone();
+            let ab = agent_btn.clone();
+            let sel = Rc::clone(&selected_agent_idx);
+            let ag = action_group.clone();
+            let anl_outer = agent_name_status.clone();
+            agent_configure.connect_activate(move |_, _| {
+                let win = panel_ref
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let Some(win) = win.as_ref() else { return };
+
+                let state_c = Rc::clone(&state_ref);
+                let am = am.clone();
+                let ab = ab.clone();
+                let sel = sel.clone();
+                let ag = ag.clone();
+                let anl_cfg = anl_outer.clone();
+                crate::agent_config_dialog::show(win, move |new_configs| {
+                    let mut s = state_c.borrow_mut();
+                    let current_name = s
+                        .config
+                        .agent_configs
+                        .get(s.config.selected_profile_idx)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    let new_idx = new_configs
+                        .iter()
+                        .position(|c| c.name == current_name)
+                        .unwrap_or(0);
+
+                    // Remove old agent-select-N actions
+                    for j in 0..200 {
+                        let name = format!("agent-select-{j}");
+                        if ag.lookup_action(&name).is_some() {
+                            ag.remove_action(&name);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Re-register with new configs
+                    for (i, _cfg) in new_configs.iter().enumerate() {
+                        let action = gio::SimpleAction::new(&format!("agent-select-{i}"), None);
+                        let state_inner = Rc::clone(&state_c);
+                        let sel_inner = sel.clone();
+                        let am_inner = am.clone();
+                        let ab_inner = ab.clone();
+                        let anl_inner = anl_cfg.clone();
+                        action.connect_activate(move |_, _| {
+                            sel_inner.set(i);
+                            let mut s = state_inner.borrow_mut();
+                            s.config.selected_profile_idx = i;
+                            s.process.session_id = None;
+                            (s.on_session_id_change)(None);
+                            if let Some(cfg) = s.config.agent_configs.get(i) {
+                                (s.on_profile_change)(&cfg.name);
+                                ab_inner.set_tooltip_text(Some(&format!("Agent: {}", cfg.name)));
+                                anl_inner.set_text(&cfg.name);
+                            }
+                            rebuild_agent_menu(&am_inner, &s.config.agent_configs, i);
+                        });
+                        ag.add_action(&action);
+                    }
+
+                    s.config.agent_configs = new_configs;
+                    s.config.selected_profile_idx = new_idx;
+                    sel.set(new_idx);
+                    rebuild_agent_menu(&am, &s.config.agent_configs, new_idx);
+                    if let Some(cfg) = s.config.agent_configs.get(new_idx) {
+                        ab.set_tooltip_text(Some(&format!("Agent: {}", cfg.name)));
+                        anl_cfg.set_text(&cfg.name);
+                    }
+                });
+            });
+        }
+        action_group.add_action(&agent_configure);
 
         panel.insert_action_group("panel", Some(&action_group));
     }

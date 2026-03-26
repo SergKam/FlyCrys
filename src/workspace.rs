@@ -486,6 +486,9 @@ impl Workspace {
         });
 
         // Status bar labels — created here, passed into the agent panel which updates them.
+        let agent_name_label = gtk::Label::new(Some("Agent"));
+        agent_name_label.add_css_class("statusbar-item");
+
         let token_label = gtk::Label::new(Some("\u{2013}"));
         token_label.set_tooltip_text(Some("Context window usage"));
         token_label.add_css_class("statusbar-item");
@@ -522,6 +525,7 @@ impl Workspace {
                 on_tool_result,
                 token_label.clone(),
                 cost_label.clone(),
+                agent_name_label.clone(),
             )
         };
 
@@ -555,7 +559,11 @@ impl Workspace {
         let status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         status_bar.add_css_class("statusbar");
 
-        // 1) Claude stats (left)
+        // 1) Agent name (leftmost)
+        status_bar.append(&agent_name_label);
+        status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        // 2) Claude stats
         status_bar.append(&token_label);
         status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         status_bar.append(&cost_label);

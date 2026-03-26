@@ -39,6 +39,9 @@ fn light_css() -> &'static str {
         min-height: 20px;
     }
     .statusbar-item { font-size: small; color: alpha(@window_fg_color, 0.65); }
+
+    /* Debug: force popover menu separators visible */
+    popover.menu separator { background-color: #c0c0c0; min-height: 1px; margin: 4px 8px; }
     "#
 }
 
@@ -73,5 +76,8 @@ fn dark_css() -> &'static str {
         min-height: 20px;
     }
     .statusbar-item { font-size: small; color: alpha(@window_fg_color, 0.55); }
+
+    /* Debug: force popover menu separators visible */
+    popover.menu separator { background-color: #555555; min-height: 1px; margin: 4px 8px; }
     "#
 }
