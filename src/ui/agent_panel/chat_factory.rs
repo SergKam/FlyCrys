@@ -27,8 +27,14 @@ pub(super) fn render_history_message(
             output,
             is_error,
         } => {
-            let display_hint = extract_tool_display(tool_name, tool_input);
             let file_path = extract_file_path(tool_input);
+            // When a file path is present it's shown as a clickable link,
+            // so don't duplicate it in the hint text.
+            let display_hint = if file_path.is_some() {
+                String::new()
+            } else {
+                extract_tool_display(tool_name, tool_input)
+            };
             let full_cmd = agent_widgets::extract_full_command(tool_name, tool_input);
 
             let tool_id = format!("hist-{}", uuid::Uuid::new_v4());

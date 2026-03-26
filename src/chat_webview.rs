@@ -75,7 +75,7 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; paddi
 .assistant-msg img { max-width: 100%; border-radius: 4px; }
 /* Tool calls */
 .tool-call { border-radius: 6px; padding: 6px; margin: 4px 8px; }
-.tool-call summary { cursor: pointer; font-size: 0.9em; list-style: none; display: flex; align-items: center; gap: 4px; }
+.tool-call summary { cursor: pointer; font-size: 0.9em; list-style: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-call summary::-webkit-details-marker { display: none; }
 .tool-call .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 .tool-call .indicator { font-size: 0.8em; }

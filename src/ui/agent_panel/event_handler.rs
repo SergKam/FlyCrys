@@ -95,8 +95,13 @@ pub(crate) fn handle_domain_event(
             input_json,
         } => {
             let mut s = state.borrow_mut();
-            let input_text = extract_tool_display(&name, &input_json);
             let file_path = extract_file_path(&input_json);
+            // When a file path link is shown, skip the hint to avoid duplication.
+            let input_text = if file_path.is_some() {
+                String::new()
+            } else {
+                extract_tool_display(&name, &input_json)
+            };
             let full_cmd = agent_widgets::extract_full_command(&name, &input_json);
 
             s.chat.webview.append_tool_call(
