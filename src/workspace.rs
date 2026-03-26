@@ -563,10 +563,7 @@ impl Workspace {
         // 2) Git branch
         if let Some(branch) = crate::services::git::current_branch(&working_dir) {
             status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-            let git_icon = gtk::Image::from_icon_name("git-symbolic");
-            git_icon.add_css_class("statusbar-item");
-            status_bar.append(&git_icon);
-            let branch_label = gtk::Label::new(Some(&branch));
+            let branch_label = gtk::Label::new(Some(&format!("git: {branch}")));
             branch_label.add_css_class("statusbar-item");
             status_bar.append(&branch_label);
         }
