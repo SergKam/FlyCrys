@@ -34,6 +34,7 @@ pub const OUTPUT_HEAD_TAIL_LINES: usize = 5;
 
 // --- File Tree ---
 pub const TREE_MAX_EXPAND_PASSES: usize = 30;
+pub const TREE_SEARCH_MAX_RESULTS: usize = 200;
 
 // --- Gutter ---
 pub const GUTTER_CHAR_WIDTH_PX: i32 = 10;

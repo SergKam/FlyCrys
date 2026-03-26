@@ -31,6 +31,13 @@ fn light_css() -> &'static str {
     .git-deleted { color: #e01b24; font-weight: bold; }
     .git-untracked { color: alpha(@window_fg_color, 0.45); }
 
+    /* ── Tree toolbar ── */
+    .tree-toolbar {
+        border-bottom: 1px solid #d0d0d0;
+        padding: 0 4px;
+        min-height: 28px;
+    }
+
     /* ── Status bar ── */
     .statusbar {
         background-color: #f0f0f0;
@@ -68,6 +75,13 @@ fn dark_css() -> &'static str {
     .git-added { color: #2ec27e; font-weight: bold; }
     .git-deleted { color: #e01b24; font-weight: bold; }
     .git-untracked { color: alpha(@window_fg_color, 0.45); }
+
+    /* ── Tree toolbar ── */
+    .tree-toolbar {
+        border-bottom: 1px solid #444444;
+        padding: 0 4px;
+        min-height: 28px;
+    }
 
     /* ── Status bar ── */
     .statusbar {
