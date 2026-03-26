@@ -4,10 +4,10 @@ use std::path::Path;
 use crate::config::constants::{
     AGENT_PANEL_MIN_WIDTH, EDITOR_TERMINAL_SPLIT_DEFAULT, TREE_PANE_DEFAULT_WIDTH,
 };
-use crate::config::types::{DiffMode, ViewMode};
+use crate::config::types::PanelMode;
 
 /// Per-workspace configuration — everything needed to restore a single tab
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct WorkspaceConfig {
     pub id: String,
     pub working_directory: String,
@@ -16,14 +16,9 @@ pub struct WorkspaceConfig {
     pub agent_pane_width: i32,
     pub open_file: Option<String>,
     pub terminal_visible: bool,
-    #[serde(default = "default_profile")]
     pub agent_1_profile: String,
-    #[serde(default)]
     pub agent_1_session_id: Option<String>,
-    #[serde(default, alias = "preview_mode")]
-    pub view_mode: ViewMode,
-    #[serde(default, alias = "show_diff")]
-    pub diff_mode: DiffMode,
+    pub panel_mode: PanelMode,
 }
 
 fn default_profile() -> String {
@@ -42,8 +37,7 @@ impl WorkspaceConfig {
             terminal_visible: false,
             agent_1_profile: default_profile(),
             agent_1_session_id: None,
-            view_mode: ViewMode::default(),
-            diff_mode: DiffMode::Visible,
+            panel_mode: PanelMode::default(),
         }
     }
 
@@ -53,5 +47,78 @@ impl WorkspaceConfig {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.working_directory.clone())
+    }
+}
+
+// ── Backward-compatible deserialization ──────────────────────────────────────
+// Old configs have `view_mode` + `diff_mode`; new configs have `panel_mode`.
+
+/// Raw shape used only for deserialization — supports both old and new formats.
+#[derive(Deserialize)]
+struct WorkspaceConfigRaw {
+    id: String,
+    working_directory: String,
+    #[serde(default = "default_tree_pane")]
+    tree_pane_width: i32,
+    #[serde(default = "default_split")]
+    editor_terminal_split: i32,
+    #[serde(default = "default_agent_pane")]
+    agent_pane_width: i32,
+    #[serde(default)]
+    open_file: Option<String>,
+    #[serde(default)]
+    terminal_visible: bool,
+    #[serde(default = "default_profile")]
+    agent_1_profile: String,
+    #[serde(default)]
+    agent_1_session_id: Option<String>,
+
+    // New field
+    #[serde(default)]
+    panel_mode: Option<PanelMode>,
+
+    // Legacy fields (consumed for migration, never serialized)
+    #[serde(default, alias = "preview_mode")]
+    view_mode: Option<crate::config::types::ViewMode>,
+    #[serde(default, alias = "show_diff")]
+    diff_mode: Option<crate::config::types::DiffMode>,
+}
+
+fn default_tree_pane() -> i32 {
+    TREE_PANE_DEFAULT_WIDTH
+}
+fn default_split() -> i32 {
+    EDITOR_TERMINAL_SPLIT_DEFAULT
+}
+fn default_agent_pane() -> i32 {
+    AGENT_PANEL_MIN_WIDTH
+}
+
+impl<'de> Deserialize<'de> for WorkspaceConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = WorkspaceConfigRaw::deserialize(deserializer)?;
+        let panel_mode = raw.panel_mode.unwrap_or_else(|| {
+            // Migrate from old fields
+            use crate::config::types::{DiffMode, ViewMode};
+            if raw.diff_mode == Some(DiffMode::Visible) {
+                PanelMode::Diff
+            } else if raw.view_mode == Some(ViewMode::Preview) {
+                PanelMode::Preview
+            } else {
+                PanelMode::Source
+            }
+        });
+        Ok(WorkspaceConfig {
+            id: raw.id,
+            working_directory: raw.working_directory,
+            tree_pane_width: raw.tree_pane_width,
+            editor_terminal_split: raw.editor_terminal_split,
+            agent_pane_width: raw.agent_pane_width,
+            open_file: raw.open_file,
+            terminal_visible: raw.terminal_visible,
+            agent_1_profile: raw.agent_1_profile,
+            agent_1_session_id: raw.agent_1_session_id,
+            panel_mode,
+        })
     }
 }

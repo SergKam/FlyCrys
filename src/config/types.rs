@@ -57,43 +57,75 @@ impl<'de> Deserialize<'de> for Theme {
     }
 }
 
-/// How to display the current file.
+/// How to display the current file: source code, rendered preview, or git diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewMode {
+pub enum PanelMode {
+    #[default]
+    Source,
+    Preview,
+    Diff,
+}
+
+impl PanelMode {
+    pub fn is_source(self) -> bool {
+        matches!(self, PanelMode::Source)
+    }
+    pub fn is_preview(self) -> bool {
+        matches!(self, PanelMode::Preview)
+    }
+    pub fn is_diff(self) -> bool {
+        matches!(self, PanelMode::Diff)
+    }
+}
+
+impl Serialize for PanelMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            PanelMode::Source => serializer.serialize_str("Source"),
+            PanelMode::Preview => serializer.serialize_str("Preview"),
+            PanelMode::Diff => serializer.serialize_str("Diff"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PanelMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = PanelMode;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#""Source", "Preview", or "Diff""#)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<PanelMode, E> {
+                match v {
+                    "Source" | "source" => Ok(PanelMode::Source),
+                    "Preview" | "preview" => Ok(PanelMode::Preview),
+                    "Diff" | "diff" => Ok(PanelMode::Diff),
+                    _ => Err(E::unknown_variant(v, &["Source", "Preview", "Diff"])),
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+// ── Legacy types (used only for backward-compatible deserialization) ─────────
+
+/// Deprecated: use `PanelMode` instead. Kept for config migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ViewMode {
     #[default]
     Source,
     Preview,
 }
 
-impl ViewMode {
-    pub fn is_preview(self) -> bool {
-        matches!(self, ViewMode::Preview)
-    }
-
-    pub fn toggle(self) -> Self {
-        match self {
-            ViewMode::Source => ViewMode::Preview,
-            ViewMode::Preview => ViewMode::Source,
-        }
-    }
-}
-
-impl Serialize for ViewMode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            ViewMode::Source => serializer.serialize_str("Source"),
-            ViewMode::Preview => serializer.serialize_str("Preview"),
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for ViewMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
             type Value = ViewMode;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str(r#""Source", "Preview", or a boolean"#)
+                f.write_str(r#""Source" or "Preview""#)
             }
             fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<ViewMode, E> {
                 Ok(if v {
@@ -110,47 +142,25 @@ impl<'de> Deserialize<'de> for ViewMode {
                 }
             }
         }
-        deserializer.deserialize_any(Visitor)
+        deserializer.deserialize_any(V)
     }
 }
 
-/// Whether diff overlay is active in the editor.
+/// Deprecated: use `PanelMode` instead. Kept for config migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DiffMode {
+pub(crate) enum DiffMode {
     #[default]
     Hidden,
     Visible,
 }
 
-impl DiffMode {
-    pub fn is_visible(self) -> bool {
-        matches!(self, DiffMode::Visible)
-    }
-
-    pub fn toggle(self) -> Self {
-        match self {
-            DiffMode::Hidden => DiffMode::Visible,
-            DiffMode::Visible => DiffMode::Hidden,
-        }
-    }
-}
-
-impl Serialize for DiffMode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            DiffMode::Hidden => serializer.serialize_str("Hidden"),
-            DiffMode::Visible => serializer.serialize_str("Visible"),
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for DiffMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
             type Value = DiffMode;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str(r#""Hidden", "Visible", or a boolean"#)
+                f.write_str(r#""Hidden" or "Visible""#)
             }
             fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<DiffMode, E> {
                 Ok(if v {
@@ -167,7 +177,7 @@ impl<'de> Deserialize<'de> for DiffMode {
                 }
             }
         }
-        deserializer.deserialize_any(Visitor)
+        deserializer.deserialize_any(V)
     }
 }
 

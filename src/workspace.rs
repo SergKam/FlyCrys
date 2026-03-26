@@ -7,7 +7,7 @@ use std::rc::Rc;
 use vte4::prelude::*;
 
 use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, TREE_MAX_EXPAND_PASSES};
-use crate::config::types::{NotificationLevel, Theme};
+use crate::config::types::{NotificationLevel, PanelMode, Theme};
 use crate::file_entry::FileEntry;
 use crate::services::platform;
 use crate::session::{self, WorkspaceConfig};
@@ -66,7 +66,7 @@ impl Workspace {
         );
 
         // Toggle handlers (view mode, diff mode)
-        wire_toggle_handlers(&tv, &current_file, &theme, &config, &working_dir);
+        wire_panel_mode_handlers(&tv, &current_file, &theme, &config, &working_dir);
 
         // Toolbar button handlers (open, edit, browser, terminal, copy)
         wire_toolbar_buttons(
@@ -305,50 +305,24 @@ fn setup_terminal(
     }
 }
 
-// ── Toggle handlers (view mode, diff mode) ───────────────────────────────────
+// ── Panel mode handlers (Source / Preview / Diff) ─────────────────────────────
 
-fn wire_toggle_handlers(
+fn wire_panel_mode_handlers(
     tv: &textview::TextViewPanel,
     current_file: &Rc<RefCell<String>>,
     theme: &Rc<Cell<Theme>>,
     config: &Rc<RefCell<WorkspaceConfig>>,
     working_dir: &Path,
 ) {
-    // View toggle: source ↔ preview
-    {
-        let source_hbox = tv.source_hbox.clone();
-        let preview_scroll = tv.preview_scroll.clone();
-        let cf = Rc::clone(current_file);
-        let th = Rc::clone(theme);
-        let cfg = Rc::clone(config);
-        tv.view_toggle
-            .connect_toggled(move |toggle: &gtk::ToggleButton| {
-                let is_preview = toggle.is_active();
-                cfg.borrow_mut().view_mode = if is_preview {
-                    crate::config::types::ViewMode::Preview
-                } else {
-                    crate::config::types::ViewMode::Source
-                };
-                if is_preview {
-                    source_hbox.set_visible(false);
-                    preview_scroll.set_visible(true);
-                    let file = cf.borrow().clone();
-                    if !file.is_empty() {
-                        textview::load_preview(&preview_scroll, &file, th.get().is_dark());
-                    }
-                } else {
-                    source_hbox.set_visible(true);
-                    preview_scroll.set_visible(false);
-                }
-            });
-    }
-
-    // Diff toggle: normal source ↔ git diff
+    // Source button
     {
         let text_view = tv.text_view.clone();
         let gutter = tv.gutter.clone();
         let path_label = tv.path_label.clone();
-        let view_toggle = tv.view_toggle.clone();
+        let source_hbox = tv.source_hbox.clone();
+        let preview_scroll = tv.preview_scroll.clone();
+        let source_btn = tv.source_btn.clone();
+        let preview_btn = tv.preview_btn.clone();
         let open_btn = tv.open_btn.clone();
         let edit_btn = tv.edit_btn.clone();
         let browser_btn = tv.browser_btn.clone();
@@ -358,61 +332,105 @@ fn wire_toggle_handlers(
         let cf = Rc::clone(current_file);
         let th = Rc::clone(theme);
         let cfg = Rc::clone(config);
-        let wd = working_dir.to_path_buf();
-        tv.diff_toggle
-            .connect_toggled(move |toggle: &gtk::ToggleButton| {
-                let is_visible = toggle.is_active();
-                cfg.borrow_mut().diff_mode = if is_visible {
-                    crate::config::types::DiffMode::Visible
+        tv.source_btn.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            cfg.borrow_mut().panel_mode = PanelMode::Source;
+            source_hbox.set_visible(true);
+            preview_scroll.set_visible(false);
+            let file = cf.borrow().clone();
+            if !file.is_empty() {
+                let hl_theme = if th.get().is_dark() {
+                    highlight::DARK_THEME
                 } else {
-                    crate::config::types::DiffMode::Hidden
+                    highlight::LIGHT_THEME
                 };
-                let file = cf.borrow().clone();
-                if file.is_empty() {
-                    return;
-                }
-                if is_visible {
-                    if let Some(diff) = git_panel::get_file_diff(&file, &wd) {
-                        let line_count = diff.lines().count().max(1);
-                        git_panel::load_diff_into_buffer(
-                            &text_view.buffer(),
-                            &diff,
-                            th.get().is_dark(),
-                        );
-                        textview::update_gutter(&gutter, line_count);
-                    }
-                } else {
-                    let hl_theme = if th.get().is_dark() {
-                        highlight::DARK_THEME
-                    } else {
-                        highlight::LIGHT_THEME
-                    };
-                    textview::load_file(
-                        &text_view,
-                        &gutter,
-                        &path_label,
-                        &file,
-                        hl_theme,
-                        &view_toggle,
-                        &[
-                            &open_btn,
-                            &edit_btn,
-                            &browser_btn,
-                            &terminal_btn,
-                            &copy_btn,
-                            &chat_btn,
-                        ],
-                    );
-                }
-            });
+                textview::load_file(
+                    &text_view,
+                    &gutter,
+                    &path_label,
+                    &file,
+                    hl_theme,
+                    &source_btn,
+                    &preview_btn,
+                    &[
+                        &open_btn,
+                        &edit_btn,
+                        &browser_btn,
+                        &terminal_btn,
+                        &copy_btn,
+                        &chat_btn,
+                    ],
+                );
+            }
+        });
     }
 
-    // Set initial toggle states from config
-    let diff_mode = config.borrow().diff_mode;
-    tv.diff_toggle.set_active(diff_mode.is_visible());
-    let view_mode = config.borrow().view_mode;
-    if view_mode.is_preview() {
-        tv.view_toggle.set_active(true);
+    // Preview button
+    {
+        let source_hbox = tv.source_hbox.clone();
+        let preview_scroll = tv.preview_scroll.clone();
+        let cf = Rc::clone(current_file);
+        let th = Rc::clone(theme);
+        let cfg = Rc::clone(config);
+        tv.preview_btn.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            cfg.borrow_mut().panel_mode = PanelMode::Preview;
+            source_hbox.set_visible(false);
+            preview_scroll.set_visible(true);
+            let file = cf.borrow().clone();
+            if !file.is_empty() {
+                textview::load_preview(&preview_scroll, &file, th.get().is_dark());
+            }
+        });
+    }
+
+    // Diff button
+    {
+        let text_view = tv.text_view.clone();
+        let gutter = tv.gutter.clone();
+        let source_hbox = tv.source_hbox.clone();
+        let preview_scroll = tv.preview_scroll.clone();
+        let source_btn = tv.source_btn.clone();
+        let cf = Rc::clone(current_file);
+        let th = Rc::clone(theme);
+        let cfg = Rc::clone(config);
+        let wd = working_dir.to_path_buf();
+        tv.diff_btn.connect_toggled(move |btn| {
+            if !btn.is_active() {
+                return;
+            }
+            cfg.borrow_mut().panel_mode = PanelMode::Diff;
+            source_hbox.set_visible(true);
+            preview_scroll.set_visible(false);
+            let file = cf.borrow().clone();
+            if !file.is_empty() {
+                if let Some(diff) = git_panel::get_file_diff(&file, &wd) {
+                    let line_count = diff.lines().count().max(1);
+                    git_panel::load_diff_into_buffer(
+                        &text_view.buffer(),
+                        &diff,
+                        th.get().is_dark(),
+                    );
+                    textview::update_gutter(&gutter, line_count);
+                } else {
+                    // No diff available — fall back to source
+                    source_btn.set_active(true);
+                }
+            }
+        });
+    }
+
+    // Set initial state from config (read then drop borrow before set_active,
+    // because set_active fires the handler synchronously which borrows config).
+    let initial_mode = config.borrow().panel_mode;
+    match initial_mode {
+        PanelMode::Source => {} // already active by default
+        PanelMode::Preview => tv.preview_btn.set_active(true),
+        PanelMode::Diff => tv.diff_btn.set_active(true),
     }
 }
 
@@ -507,8 +525,9 @@ fn build_on_open_file(
     let text_view = tv.text_view.clone();
     let gutter = tv.gutter.clone();
     let path_label = tv.path_label.clone();
-    let view_toggle = tv.view_toggle.clone();
-    let diff_toggle = tv.diff_toggle.clone();
+    let source_btn = tv.source_btn.clone();
+    let preview_btn = tv.preview_btn.clone();
+    let diff_btn = tv.diff_btn.clone();
     let preview_scroll = tv.preview_scroll.clone();
     let open_btn = tv.open_btn.clone();
     let edit_btn = tv.edit_btn.clone();
@@ -534,7 +553,8 @@ fn build_on_open_file(
             &path_label,
             file_path,
             hl_theme,
-            &view_toggle,
+            &source_btn,
+            &preview_btn,
             &[
                 &open_btn,
                 &edit_btn,
@@ -548,19 +568,28 @@ fn build_on_open_file(
         cfg.borrow_mut().open_file = Some(file_path.to_string());
         select_file_in_tree(&sel, file_path);
 
-        if view_toggle.is_active() {
+        // If preview is active, render preview
+        if preview_btn.is_active() {
             textview::load_preview(&preview_scroll, file_path, th.get().is_dark());
         }
 
+        // Update diff button sensitivity; force source if diff is active but no changes
         let is_modified = git_panel::is_file_modified(file_path, &wd);
-        diff_toggle.set_sensitive(is_modified);
-        if diff_toggle.is_active()
-            && is_modified
-            && let Some(diff) = git_panel::get_file_diff(file_path, &wd)
-        {
-            let line_count = diff.lines().count().max(1);
-            git_panel::load_diff_into_buffer(&text_view.buffer(), &diff, th.get().is_dark());
-            textview::update_gutter(&gutter, line_count);
+        diff_btn.set_sensitive(is_modified);
+        if diff_btn.is_active() {
+            if is_modified {
+                if let Some(diff) = git_panel::get_file_diff(file_path, &wd) {
+                    let line_count = diff.lines().count().max(1);
+                    git_panel::load_diff_into_buffer(
+                        &text_view.buffer(),
+                        &diff,
+                        th.get().is_dark(),
+                    );
+                    textview::update_gutter(&gutter, line_count);
+                }
+            } else {
+                source_btn.set_active(true);
+            }
         }
     })
 }

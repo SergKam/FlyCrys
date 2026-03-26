@@ -17,8 +17,9 @@ pub struct TextViewPanel {
     pub terminal_btn: gtk::Button,
     pub copy_btn: gtk::Button,
     pub chat_btn: gtk::Button,
-    pub diff_toggle: gtk::ToggleButton,
-    pub view_toggle: gtk::ToggleButton,
+    pub source_btn: gtk::ToggleButton,
+    pub preview_btn: gtk::ToggleButton,
+    pub diff_btn: gtk::ToggleButton,
     pub source_hbox: gtk::Box,
     pub preview_scroll: gtk::ScrolledWindow,
 }
@@ -97,17 +98,22 @@ pub fn create_text_view() -> TextViewPanel {
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
 
-    let diff_toggle = gtk::ToggleButton::new();
-    diff_toggle.set_label("Diff");
-    diff_toggle.set_tooltip_text(Some("Show git diff"));
-    diff_toggle.set_has_frame(false);
-    diff_toggle.set_sensitive(false);
+    let source_btn = gtk::ToggleButton::with_label("Source");
+    source_btn.set_active(true);
 
-    let view_toggle = gtk::ToggleButton::new();
-    view_toggle.set_icon_name("view-reveal-symbolic");
-    view_toggle.set_tooltip_text(Some("Preview"));
-    view_toggle.set_has_frame(false);
-    view_toggle.set_sensitive(false);
+    let preview_btn = gtk::ToggleButton::with_label("Preview");
+    preview_btn.set_sensitive(false);
+    preview_btn.set_group(Some(&source_btn));
+
+    let diff_btn = gtk::ToggleButton::with_label("Diff");
+    diff_btn.set_sensitive(false);
+    diff_btn.set_group(Some(&source_btn));
+
+    let mode_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    mode_box.add_css_class("linked");
+    mode_box.append(&preview_btn);
+    mode_box.append(&source_btn);
+    mode_box.append(&diff_btn);
 
     toolbar.append(&open_btn);
     toolbar.append(&edit_btn);
@@ -117,8 +123,7 @@ pub fn create_text_view() -> TextViewPanel {
     toolbar.append(&copy_btn);
     toolbar.append(&chat_btn);
     toolbar.append(&spacer);
-    toolbar.append(&diff_toggle);
-    toolbar.append(&view_toggle);
+    toolbar.append(&mode_box);
 
     // Line number gutter
     let gutter = gtk::TextView::new();
@@ -203,8 +208,9 @@ pub fn create_text_view() -> TextViewPanel {
         terminal_btn,
         copy_btn,
         chat_btn,
-        diff_toggle,
-        view_toggle,
+        source_btn,
+        preview_btn,
+        diff_btn,
         source_hbox,
         preview_scroll,
     }
@@ -227,7 +233,8 @@ pub fn load_file(
     path_label: &gtk::Label,
     file_path: &str,
     theme: &str,
-    view_toggle: &gtk::ToggleButton,
+    source_btn: &gtk::ToggleButton,
+    preview_btn: &gtk::ToggleButton,
     toolbar_btns: &[&gtk::Button],
 ) {
     let path = Path::new(file_path);
@@ -238,14 +245,14 @@ pub fn load_file(
         btn.set_sensitive(true);
     }
 
-    // Set preview toggle sensitivity; force source mode if not previewable
+    // Set preview sensitivity; force source if not previewable and preview is active
     let previewable = matches!(
         is_previewable(file_path),
         PreviewKind::Markdown | PreviewKind::Image
     );
-    view_toggle.set_sensitive(previewable);
-    if !previewable && view_toggle.is_active() {
-        view_toggle.set_active(false); // triggers handler → swaps to source
+    preview_btn.set_sensitive(previewable);
+    if !previewable && preview_btn.is_active() {
+        source_btn.set_active(true); // switches radio group to source
     }
 
     let buffer = text_view.buffer();
