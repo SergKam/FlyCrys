@@ -1,5 +1,5 @@
 use gtk4 as gtk;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
 
@@ -306,6 +306,10 @@ fn build_base_html(is_dark: bool) -> String {
 pub struct ChatWebView {
     webview: webkit6::WebView,
     msg_counter: Cell<u32>,
+    /// JS calls queued before the page finishes loading.
+    pending_js: Rc<RefCell<Vec<String>>>,
+    /// `true` once the base HTML document has finished loading.
+    ready: Rc<Cell<bool>>,
 }
 
 impl ChatWebView {
@@ -397,6 +401,32 @@ impl ChatWebView {
             true
         });
 
+        // Queue for JS calls made before the page is ready.
+        let pending_js: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let ready = Rc::new(Cell::new(false));
+
+        // Flush queued JS once the base HTML has loaded.
+        {
+            let pending = Rc::clone(&pending_js);
+            let rdy = Rc::clone(&ready);
+            let wv = webview.clone();
+            webview.connect_load_changed(move |_wv, event| {
+                if event == webkit6::LoadEvent::Finished {
+                    rdy.set(true);
+                    let queue: Vec<String> = pending.borrow_mut().drain(..).collect();
+                    for js in queue {
+                        wv.evaluate_javascript(
+                            &js,
+                            None,
+                            None,
+                            None::<&gtk::gio::Cancellable>,
+                            |_| {},
+                        );
+                    }
+                }
+            });
+        }
+
         // Load the base HTML document.
         let html = build_base_html(is_dark);
         webview.load_html(&html, None);
@@ -404,6 +434,8 @@ impl ChatWebView {
         Self {
             webview,
             msg_counter: Cell::new(0),
+            pending_js,
+            ready,
         }
     }
 
@@ -557,14 +589,21 @@ impl ChatWebView {
     }
 
     /// Fire-and-forget JavaScript evaluation.
+    ///
+    /// If the base HTML document hasn't finished loading yet, the call is
+    /// queued and will be flushed in order once `LoadEvent::Finished` fires.
     fn evaluate_js(&self, js: &str) {
-        self.webview.evaluate_javascript(
-            js,
-            None,
-            None,
-            None::<&gtk::gio::Cancellable>,
-            |_result| {},
-        );
+        if self.ready.get() {
+            self.webview.evaluate_javascript(
+                js,
+                None,
+                None,
+                None::<&gtk::gio::Cancellable>,
+                |_result| {},
+            );
+        } else {
+            self.pending_js.borrow_mut().push(js.to_string());
+        }
     }
 }
 
