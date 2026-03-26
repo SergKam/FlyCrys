@@ -555,41 +555,31 @@ impl Workspace {
         let status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         status_bar.add_css_class("statusbar");
 
-        // Root path (shortened to last 2 components)
-        let root_display = {
-            let p = working_dir.to_string_lossy();
-            let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
-            if parts.len() > 2 {
-                format!("…/{}", parts[parts.len() - 2..].join("/"))
-            } else {
-                p.to_string()
-            }
-        };
-        let path_label = gtk::Label::new(Some(&root_display));
-        path_label.set_tooltip_text(Some(&working_dir.to_string_lossy()));
-        path_label.add_css_class("statusbar-item");
-        path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
-        status_bar.append(&path_label);
+        // 1) Claude stats (left)
+        status_bar.append(&token_label);
+        status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        status_bar.append(&cost_label);
 
-        // Git branch
+        // 2) Git branch
         if let Some(branch) = crate::services::git::current_branch(&working_dir) {
-            let branch_label = gtk::Label::new(None);
-            branch_label.set_use_markup(true);
-            branch_label.set_markup(&format!(
-                "<span foreground=\"#4a90d9\">\u{E0A0} {}</span>",
-                glib::markup_escape_text(&branch)
-            ));
+            status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+            let git_icon = gtk::Image::from_icon_name("git-symbolic");
+            git_icon.add_css_class("statusbar-item");
+            status_bar.append(&git_icon);
+            let branch_label = gtk::Label::new(Some(&branch));
             branch_label.add_css_class("statusbar-item");
             status_bar.append(&branch_label);
         }
 
+        // 3) Full path (right-aligned)
         let status_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         status_spacer.set_hexpand(true);
         status_bar.append(&status_spacer);
 
-        status_bar.append(&token_label);
-        status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        status_bar.append(&cost_label);
+        let path_label = gtk::Label::new(Some(&working_dir.to_string_lossy()));
+        path_label.add_css_class("statusbar-item");
+        path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        status_bar.append(&path_label);
 
         // Root container
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
