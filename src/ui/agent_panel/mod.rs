@@ -22,7 +22,7 @@ use crate::services::cli::{AgentBackend, AgentDomainEvent, AgentSpawnConfig, Ima
 use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
 
 /// How many history entries to show initially / per "Load previous" click.
-const PAGE_SIZE: usize = 20;
+const PAGE_SIZE: usize = 100;
 
 struct AttachedImage {
     bytes: Vec<u8>,
