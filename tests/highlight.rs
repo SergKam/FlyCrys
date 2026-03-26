@@ -102,6 +102,28 @@ fn diff_to_pango_with_rust_syntax() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Highlight: diff_to_html
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn diff_to_html_basic() {
+    let out = highlight::diff_to_html("old line", "new line", "test.txt");
+    assert!(out.contains("diff-del"), "removed lines class: {out}");
+    assert!(out.contains("diff-add"), "added lines class: {out}");
+    assert!(out.contains("- "), "removed prefix: {out}");
+    assert!(out.contains("+ "), "added prefix: {out}");
+}
+
+#[test]
+fn diff_to_html_escapes() {
+    let out = highlight::diff_to_html("<div>", "&amp;", "test.html");
+    assert!(
+        out.contains("&lt;") || out.contains("&lt;div&gt;"),
+        "should escape HTML: {out}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // ClaudeBackend: process state
 // ──────────────────────────────────────────────────────────────────────
 

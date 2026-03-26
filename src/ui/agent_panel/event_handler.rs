@@ -1,21 +1,16 @@
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4 as gtk;
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::agent_widgets;
-use crate::chat_entry::ChatEntry;
+use crate::markdown;
 use crate::models::chat::ChatMessage;
 use crate::services::cli::AgentDomainEvent;
 
-use super::chat_factory;
 use super::state::PanelState;
-use super::{
-    extract_file_path, extract_tool_display, format_token_count, scroll_to_bottom,
-    trim_chat_if_needed,
-};
+use super::{extract_file_path, extract_tool_display, format_token_count};
 
 /// Handle a single domain event from the agent backend.
 pub(crate) fn handle_domain_event(
@@ -43,52 +38,28 @@ pub(crate) fn handle_domain_event(
 
         AgentDomainEvent::TextDelta(text) => {
             let mut s = state.borrow_mut();
-            remove_thinking_entry(&mut s);
-            if s.chat.current_streaming_entry.is_none() {
-                let entry = ChatEntry::new_assistant_streaming();
-                let widget = chat_factory::build_and_cache_widget(
-                    &entry,
-                    &s.on_open_file,
-                    s.config.theme.get().is_dark(),
-                );
-                s.chat.chat_box.append(&widget);
-                s.chat.current_streaming_entry = Some(entry);
+            remove_thinking(&mut s);
+            if !s.chat.current_streaming {
+                let id = s.chat.webview.begin_stream();
+                s.chat.current_stream_id = Some(id);
+                s.chat.current_streaming = true;
                 s.chat.current_text.clear();
-                trim_chat_if_needed(&mut s.chat);
             }
             s.chat.current_text.push_str(&text);
-            if let Some(ref entry) = s.chat.current_streaming_entry {
-                entry.set_text(s.chat.current_text.as_str());
-                if let Some(ref label) = entry.text_label() {
-                    agent_widgets::update_assistant_text(
-                        label,
-                        &s.chat.current_text,
-                        s.config.theme.get().is_dark(),
-                    );
-                }
+            let html = markdown::md_to_html_streaming(&s.chat.current_text);
+            if let Some(ref id) = s.chat.current_stream_id {
+                s.chat.webview.update_stream(id, &html);
             }
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            s.chat.webview.scroll_to_bottom();
         }
 
         AgentDomainEvent::TextBlockFinished { full_text } => {
             let mut s = state.borrow_mut();
-            if let Some(ref entry) = s.chat.current_streaming_entry {
-                entry.set_is_streaming(false);
-                // Swap the streaming label for widget-per-block markdown.
-                if !full_text.is_empty()
-                    && let Some(widget) = entry.cached_widget()
-                    && let Some(container) = widget.downcast_ref::<gtk::Box>()
-                {
-                    agent_widgets::finalize_assistant_text(
-                        container,
-                        &full_text,
-                        s.config.theme.get().is_dark(),
-                        &s.on_open_file,
-                    );
-                }
-                entry.set_text_label(None);
+            if let Some(ref id) = s.chat.current_stream_id
+                && !full_text.is_empty()
+            {
+                let html = markdown::md_to_html(&full_text, s.config.theme.get().is_dark());
+                s.chat.webview.finalize_stream(id, &html);
             }
             if !full_text.is_empty() {
                 s.chat
@@ -96,11 +67,10 @@ pub(crate) fn handle_domain_event(
                     .borrow_mut()
                     .push(ChatMessage::AssistantText { text: full_text });
             }
-            s.chat.current_streaming_entry = None;
+            s.chat.current_streaming = false;
+            s.chat.current_stream_id = None;
             s.chat.current_text.clear();
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            s.chat.webview.scroll_to_bottom();
         }
 
         AgentDomainEvent::ThinkingStarted => {}
@@ -109,12 +79,12 @@ pub(crate) fn handle_domain_event(
 
         AgentDomainEvent::ThinkingFinished => {
             let mut s = state.borrow_mut();
-            remove_thinking_entry(&mut s);
+            remove_thinking(&mut s);
         }
 
         AgentDomainEvent::ToolStarted { id: _, name: _ } => {
             let mut s = state.borrow_mut();
-            remove_thinking_entry(&mut s);
+            remove_thinking(&mut s);
         }
 
         AgentDomainEvent::ToolInputDelta(_json) => {}
@@ -126,23 +96,22 @@ pub(crate) fn handle_domain_event(
         } => {
             let mut s = state.borrow_mut();
             let input_text = extract_tool_display(&name, &input_json);
-            let file_path = extract_file_path(&input_json).unwrap_or_default();
+            let file_path = extract_file_path(&input_json);
+            let full_cmd = agent_widgets::extract_full_command(&name, &input_json);
 
-            let entry = ChatEntry::new_tool_call(&name, &input_json, &input_text, &file_path);
-            let widget = chat_factory::build_and_cache_widget(
-                &entry,
-                &s.on_open_file,
-                s.config.theme.get().is_dark(),
+            s.chat.webview.append_tool_call(
+                &id,
+                &name,
+                &input_text,
+                &full_cmd,
+                file_path.as_deref(),
             );
-            s.chat.chat_box.append(&widget);
-            s.chat.pending_tools.insert(id, entry);
+            s.chat.pending_tools.insert(id, (name, input_json));
 
-            s.chat.current_streaming_entry = None;
+            s.chat.current_streaming = false;
+            s.chat.current_stream_id = None;
             s.chat.current_text.clear();
-            trim_chat_if_needed(&mut s.chat);
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            s.chat.webview.scroll_to_bottom();
         }
 
         AgentDomainEvent::ToolResult {
@@ -151,39 +120,19 @@ pub(crate) fn handle_domain_event(
             is_error,
         } => {
             let mut s = state.borrow_mut();
-            if let Some(entry) = s.chat.pending_tools.remove(&id) {
-                entry.set_tool_output(output.as_str());
-                entry.set_tool_is_error(is_error);
-                entry.set_tool_complete(true);
+            if let Some((tool_name, tool_input)) = s.chat.pending_tools.remove(&id) {
+                s.chat.webview.tool_complete(&id, is_error);
 
-                if let Some(ref spinner) = entry.tool_spinner_widget()
-                    && let Some(ref triangle) = entry.tool_triangle_widget()
-                {
-                    agent_widgets::mark_tool_complete(spinner, triangle, is_error);
+                if !output.trim().is_empty() {
+                    let output_html = agent_widgets::format_tool_output_html(
+                        &output,
+                        is_error,
+                        &tool_name,
+                        &tool_input,
+                    );
+                    s.chat.webview.tool_output(&id, &output_html);
                 }
 
-                if let Some(ref content_box) = entry.tool_content_box_widget() {
-                    let output_clone = output.clone();
-                    let tool_name = entry.tool_name();
-                    let tool_input = entry.tool_input();
-                    let cb = content_box.clone();
-                    let rendered = Rc::new(Cell::new(false));
-                    content_box.connect_map(move |_| {
-                        if !rendered.get() {
-                            rendered.set(true);
-                            agent_widgets::render_tool_output(
-                                &cb,
-                                &output_clone,
-                                is_error,
-                                &tool_name,
-                                &tool_input,
-                            );
-                        }
-                    });
-                }
-
-                let tool_name = entry.tool_name();
-                let tool_input = entry.tool_input();
                 s.chat
                     .chat_history
                     .borrow_mut()
@@ -197,9 +146,7 @@ pub(crate) fn handle_domain_event(
             if let Some(ref cb) = s.on_tool_result {
                 cb();
             }
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            s.chat.webview.scroll_to_bottom();
         }
 
         AgentDomainEvent::TokenUsage {
@@ -239,7 +186,7 @@ pub(crate) fn handle_domain_event(
             stop_btn.set_sensitive(false);
 
             let mut s = state.borrow_mut();
-            remove_thinking_entry(&mut s);
+            remove_thinking(&mut s);
 
             if is_error {
                 let msg = match message {
@@ -248,14 +195,7 @@ pub(crate) fn handle_domain_event(
                     }
                     _ => "\u{2717} Error (no details available)".to_string(),
                 };
-                let entry = ChatEntry::new_system(&msg);
-                let widget = chat_factory::build_and_cache_widget(
-                    &entry,
-                    &s.on_open_file,
-                    s.config.theme.get().is_dark(),
-                );
-                s.chat.chat_box.append(&widget);
-                trim_chat_if_needed(&mut s.chat);
+                s.chat.webview.append_system_message(&msg);
             }
             s.tab_spinner.set_spinning(false);
 
@@ -277,20 +217,21 @@ pub(crate) fn handle_domain_event(
             }
 
             // Finalize orphaned tools
-            let orphaned: Vec<ChatEntry> = s.chat.pending_tools.drain().map(|(_, v)| v).collect();
-            for entry in &orphaned {
-                entry.set_tool_complete(true);
-                if let Some(ref spinner) = entry.tool_spinner_widget() {
-                    spinner.set_spinning(false);
-                    spinner.set_visible(false);
-                }
+            let orphaned: Vec<(String, String, String)> = s
+                .chat
+                .pending_tools
+                .drain()
+                .map(|(id, (name, input))| (id, name, input))
+                .collect();
+            for (id, _, _) in &orphaned {
+                s.chat.webview.tool_complete(id, false);
             }
             {
                 let mut hist = s.chat.chat_history.borrow_mut();
-                for entry in orphaned {
+                for (_id, name, input) in orphaned {
                     hist.push(ChatMessage::ToolCall {
-                        tool_name: entry.tool_name(),
-                        tool_input: entry.tool_input(),
+                        tool_name: name,
+                        tool_input: input,
                         output: String::new(),
                         is_error: false,
                     });
@@ -305,7 +246,8 @@ pub(crate) fn handle_domain_event(
                     hist.push(ChatMessage::System { text: err_msg });
                 }
             }
-            s.chat.current_streaming_entry = None;
+            s.chat.current_streaming = false;
+            s.chat.current_stream_id = None;
             s.chat.current_text.clear();
 
             // Desktop notification
@@ -331,33 +273,22 @@ pub(crate) fn handle_domain_event(
                 cb();
             }
 
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            s.chat.webview.scroll_to_bottom();
         }
 
         AgentDomainEvent::ProcessError(msg) => {
-            let mut s = state.borrow_mut();
-            let entry = ChatEntry::new_system(&format!("\u{26a0} {msg}"));
-            let widget = chat_factory::build_and_cache_widget(
-                &entry,
-                &s.on_open_file,
-                s.config.theme.get().is_dark(),
-            );
-            s.chat.chat_box.append(&widget);
-            trim_chat_if_needed(&mut s.chat);
-            let scrolled = s.chat.scrolled.clone();
-            drop(s);
-            scroll_to_bottom(&scrolled);
+            let s = state.borrow_mut();
+            s.chat
+                .webview
+                .append_system_message(&format!("\u{26a0} {msg}"));
+            s.chat.webview.scroll_to_bottom();
         }
     }
 }
 
-/// Remove the thinking spinner widget from the chat_box if present.
-pub(super) fn remove_thinking_entry(state: &mut PanelState) {
-    if let Some(entry) = state.chat.thinking_entry.take()
-        && let Some(widget) = entry.cached_widget()
-    {
-        state.chat.chat_box.remove(&widget);
+/// Remove the thinking indicator from the WebView if present.
+pub(super) fn remove_thinking(state: &mut PanelState) {
+    if let Some(id) = state.chat.thinking_id.take() {
+        state.chat.webview.remove_element(&id);
     }
 }

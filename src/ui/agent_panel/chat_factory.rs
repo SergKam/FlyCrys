@@ -1,128 +1,57 @@
-use gtk::prelude::*;
-use gtk4 as gtk;
-use std::cell::Cell;
-use std::rc::Rc;
-
 use crate::agent_widgets;
-use crate::chat_entry::{
-    ChatEntry, MSG_TYPE_ASSISTANT, MSG_TYPE_SYSTEM, MSG_TYPE_THINKING, MSG_TYPE_TOOL_CALL,
-    MSG_TYPE_USER,
-};
+use crate::markdown;
+use crate::models::chat::ChatMessage;
 
-/// Build the widget tree for a ChatEntry and cache it on the entry.
-/// Returns the top-level widget (ready to append to a Box).
-pub(super) fn build_and_cache_widget(
-    entry: &ChatEntry,
-    on_open_file: &Rc<dyn Fn(&str)>,
+use super::{extract_file_path, extract_tool_display};
+
+/// Convert a ChatMessage to an HTML string and inject it into the webview.
+///
+/// This replaces the old GTK widget factory; all rendering is now HTML-based.
+pub(super) fn render_history_message(
+    webview: &crate::chat_webview::ChatWebView,
+    msg: &ChatMessage,
     is_dark: bool,
-) -> gtk::Widget {
-    if let Some(w) = entry.cached_widget() {
-        return w;
-    }
-    let w = build_widget(entry, on_open_file, is_dark);
-    entry.set_cached_widget(Some(w.clone()));
-    w
-}
-
-fn build_widget(entry: &ChatEntry, on_open_file: &Rc<dyn Fn(&str)>, is_dark: bool) -> gtk::Widget {
-    match entry.msg_type() {
-        MSG_TYPE_USER => build_user_widget(entry),
-        MSG_TYPE_ASSISTANT => build_assistant_widget(entry, on_open_file, is_dark),
-        MSG_TYPE_TOOL_CALL => build_tool_widget(entry, on_open_file),
-        MSG_TYPE_SYSTEM => build_system_widget(entry),
-        MSG_TYPE_THINKING => build_thinking_widget(),
-        _ => gtk::Label::new(Some("???")).upcast(),
-    }
-}
-
-fn build_user_widget(entry: &ChatEntry) -> gtk::Widget {
-    let textures = entry.textures();
-    if textures.is_empty() {
-        agent_widgets::create_user_message(&entry.text()).upcast()
-    } else {
-        agent_widgets::create_user_message_with_images(&entry.text(), &textures).upcast()
-    }
-}
-
-fn build_assistant_widget(
-    entry: &ChatEntry,
-    on_open_file: &Rc<dyn Fn(&str)>,
-    is_dark: bool,
-) -> gtk::Widget {
-    let text = entry.text();
-
-    // Non-streaming entries (history / completed) → widget-per-block.
-    if !entry.is_streaming() && !text.is_empty() {
-        let (container, _label) = agent_widgets::create_assistant_text();
-        agent_widgets::finalize_assistant_text(&container, &text, is_dark, on_open_file);
-        return container.upcast();
-    }
-
-    // Streaming entry → single label for fast updates.
-    let (container, label) = agent_widgets::create_assistant_text();
-
-    let cb = on_open_file.clone();
-    label.connect_activate_link(move |_label, uri| {
-        if let Some(path) = uri.strip_prefix("file://") {
-            cb(path);
-            gtk::glib::Propagation::Stop
-        } else {
-            gtk::glib::Propagation::Proceed
+) {
+    match msg {
+        ChatMessage::User { text } => {
+            webview.append_user_message(text, &[]);
         }
-    });
+        ChatMessage::AssistantText { text } => {
+            let html = markdown::md_to_html(text, is_dark);
+            let id = webview.begin_stream();
+            webview.finalize_stream(&id, &html);
+        }
+        ChatMessage::ToolCall {
+            tool_name,
+            tool_input,
+            output,
+            is_error,
+        } => {
+            let display_hint = extract_tool_display(tool_name, tool_input);
+            let file_path = extract_file_path(tool_input);
+            let full_cmd = agent_widgets::extract_full_command(tool_name, tool_input);
 
-    if !text.is_empty() {
-        agent_widgets::update_assistant_text(&label, &text, is_dark);
-    }
+            let tool_id = format!("hist-{}", uuid::Uuid::new_v4());
+            webview.append_tool_call(
+                &tool_id,
+                tool_name,
+                &display_hint,
+                &full_cmd,
+                file_path.as_deref(),
+            );
 
-    entry.set_text_label(Some(label));
-    container.upcast()
-}
+            // Mark as complete immediately (history entries are already done).
+            webview.tool_complete(&tool_id, *is_error);
 
-fn build_tool_widget(entry: &ChatEntry, on_open_file: &Rc<dyn Fn(&str)>) -> gtk::Widget {
-    let file_path_str = entry.file_path();
-    let file_path = if file_path_str.is_empty() {
-        None
-    } else {
-        Some(file_path_str.as_str())
-    };
-
-    let (container, triangle, content_box, spinner) = agent_widgets::create_tool_call(
-        &entry.tool_name(),
-        &entry.tool_display_hint(),
-        file_path,
-        on_open_file.clone(),
-    );
-
-    if entry.tool_complete() {
-        agent_widgets::mark_tool_complete(&spinner, &triangle, entry.tool_is_error());
-
-        let output = entry.tool_output();
-        if !output.trim().is_empty() {
-            let tool_name = entry.tool_name();
-            let tool_input = entry.tool_input();
-            let is_err = entry.tool_is_error();
-            let rendered = Cell::new(false);
-            content_box.connect_map(move |cb| {
-                if !rendered.get() {
-                    rendered.set(true);
-                    agent_widgets::render_tool_output(cb, &output, is_err, &tool_name, &tool_input);
-                }
-            });
+            if !output.trim().is_empty() {
+                let output_html = agent_widgets::format_tool_output_html(
+                    output, *is_error, tool_name, tool_input,
+                );
+                webview.tool_output(&tool_id, &output_html);
+            }
+        }
+        ChatMessage::System { text } => {
+            webview.append_system_message(text);
         }
     }
-
-    entry.set_tool_spinner_widget(Some(spinner));
-    entry.set_tool_triangle_widget(Some(triangle));
-    entry.set_tool_content_box_widget(Some(content_box));
-
-    container.upcast()
-}
-
-fn build_system_widget(entry: &ChatEntry) -> gtk::Widget {
-    agent_widgets::create_system_message(&entry.text()).upcast()
-}
-
-fn build_thinking_widget() -> gtk::Widget {
-    agent_widgets::create_thinking_spinner().upcast()
 }

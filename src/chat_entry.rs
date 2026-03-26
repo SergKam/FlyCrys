@@ -48,16 +48,6 @@ mod imp {
         #[property(get, set)]
         is_streaming: Cell<bool>,
 
-        // --- Widget cache (not GObject properties) ---
-        /// The cached top-level widget for this entry.
-        pub(super) cached_widget: RefCell<Option<gtk::Widget>>,
-        /// For assistant entries: the Label used for streaming updates.
-        pub(super) text_label: RefCell<Option<gtk::Label>>,
-        /// For tool entries: spinner, triangle, content box.
-        pub(super) tool_spinner: RefCell<Option<gtk::Spinner>>,
-        pub(super) tool_triangle: RefCell<Option<gtk::Label>>,
-        pub(super) tool_content_box: RefCell<Option<gtk::Box>>,
-
         /// For user entries with images.
         pub(super) textures: RefCell<Vec<gtk::gdk::Texture>>,
     }
@@ -134,48 +124,6 @@ impl ChatEntry {
         glib::Object::builder()
             .property("msg-type", MSG_TYPE_THINKING)
             .build()
-    }
-
-    // --- Widget cache accessors ---
-
-    pub fn cached_widget(&self) -> Option<gtk::Widget> {
-        self.imp().cached_widget.borrow().clone()
-    }
-
-    pub fn set_cached_widget(&self, widget: Option<gtk::Widget>) {
-        *self.imp().cached_widget.borrow_mut() = widget;
-    }
-
-    pub fn text_label(&self) -> Option<gtk::Label> {
-        self.imp().text_label.borrow().clone()
-    }
-
-    pub fn set_text_label(&self, label: Option<gtk::Label>) {
-        *self.imp().text_label.borrow_mut() = label;
-    }
-
-    pub fn tool_spinner_widget(&self) -> Option<gtk::Spinner> {
-        self.imp().tool_spinner.borrow().clone()
-    }
-
-    pub fn set_tool_spinner_widget(&self, spinner: Option<gtk::Spinner>) {
-        *self.imp().tool_spinner.borrow_mut() = spinner;
-    }
-
-    pub fn tool_triangle_widget(&self) -> Option<gtk::Label> {
-        self.imp().tool_triangle.borrow().clone()
-    }
-
-    pub fn set_tool_triangle_widget(&self, label: Option<gtk::Label>) {
-        *self.imp().tool_triangle.borrow_mut() = label;
-    }
-
-    pub fn tool_content_box_widget(&self) -> Option<gtk::Box> {
-        self.imp().tool_content_box.borrow().clone()
-    }
-
-    pub fn set_tool_content_box_widget(&self, bx: Option<gtk::Box>) {
-        *self.imp().tool_content_box.borrow_mut() = bx;
     }
 
     pub fn textures(&self) -> Vec<gtk::gdk::Texture> {

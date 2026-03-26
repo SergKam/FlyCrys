@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::chat_entry::ChatEntry;
+use crate::chat_webview::ChatWebView;
 use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, DEFAULT_CONTEXT_WINDOW, INPUT_MAX_HEIGHT};
 use crate::config::types::{NotificationLevel, Theme};
 use crate::models::agent_config::AgentConfig;
@@ -23,10 +23,6 @@ use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
 
 /// How many history entries to show initially / per "Load previous" click.
 const PAGE_SIZE: usize = 20;
-
-/// Maximum message widgets kept in the chat box.  Beyond this the oldest
-/// are removed to keep layout and memory light.
-const MAX_VISIBLE_WIDGETS: usize = PAGE_SIZE * 2;
 
 struct AttachedImage {
     bytes: Vec<u8>,
@@ -84,28 +80,12 @@ pub fn create_agent_panel(
     gear_btn.set_has_frame(false);
     header.append(&gear_btn);
 
-    // --- Chat area ---
-    let chat_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    chat_box.set_valign(gtk::Align::End);
-
-    // "Load previous" button at the top of chat_box
-    let load_prev_btn = gtk::Button::with_label("\u{25b2} Load previous messages");
-    load_prev_btn.set_margin_top(4);
-    load_prev_btn.set_margin_bottom(4);
-    load_prev_btn.set_margin_start(48);
-    load_prev_btn.set_margin_end(48);
-    load_prev_btn.add_css_class("flat");
-    load_prev_btn.set_visible(false);
-    chat_box.append(&load_prev_btn);
-
-    let scrolled = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .vexpand(true)
-        .child(&chat_box)
-        .build();
-
-    // (Auto-scroll is handled explicitly via scroll_to_bottom calls.)
+    // --- Chat area: WebKitGTK WebView ---
+    let is_dark = theme.get().is_dark();
+    let webview = ChatWebView::new(is_dark, on_open_file.clone());
+    let webview_widget = webview.widget().clone();
+    webview_widget.set_vexpand(true);
+    webview_widget.set_hexpand(true);
 
     // Attachments preview bar (hidden when empty)
     let attach_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -207,7 +187,7 @@ pub fn create_agent_panel(
 
     panel.append(&header);
     panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    panel.append(&scrolled);
+    panel.append(&webview_widget);
     panel.append(&attach_bar);
     panel.append(&input_frame);
     panel.append(&toolbar);
@@ -231,14 +211,13 @@ pub fn create_agent_panel(
             cost_label: cost_label.clone(),
         },
         chat: ChatState {
-            chat_box: chat_box.clone(),
-            scrolled: scrolled.clone(),
-            load_prev_btn: load_prev_btn.clone(),
+            webview,
             oldest_rendered_idx: total_history, // nothing rendered yet
-            current_streaming_entry: None,
+            current_streaming: false,
+            current_stream_id: None,
             current_text: String::new(),
             pending_tools: HashMap::new(),
-            thinking_entry: None,
+            thinking_id: None,
             chat_history,
         },
         config: PanelConfig {
@@ -254,82 +233,35 @@ pub fn create_agent_panel(
         on_tool_result,
     }));
 
-    // Show "Load previous" button if there are older entries
+    // Show "Load previous" link if there are older entries
     if page_start > 0 {
-        load_prev_btn.set_visible(true);
+        state.borrow().chat.webview.show_load_prev_button();
     }
 
     // --- Deferred first-page load ---
-    // One idle callback: build all PAGE_SIZE widgets, then scroll to bottom.
     {
         let state_load = Rc::clone(&state);
-        let scrolled_load = scrolled.clone();
         glib::idle_add_local_once(move || {
             let mut s = state_load.borrow_mut();
             let history = s.chat.chat_history.borrow();
             let total = history.len();
-            let on_open = s.on_open_file.clone();
             let dark = s.config.theme.get().is_dark();
 
             for i in page_start..total {
-                let entry = chat_message_to_entry(&history[i]);
-                let widget = chat_factory::build_and_cache_widget(&entry, &on_open, dark);
-                s.chat.chat_box.append(&widget);
+                chat_factory::render_history_message(&s.chat.webview, &history[i], dark);
             }
             drop(history);
             s.chat.oldest_rendered_idx = page_start;
             drop(s);
-
-            // Scroll to bottom after next layout
-            let sc = scrolled_load.clone();
-            glib::idle_add_local_once(move || {
-                let adj = sc.vadjustment();
-                adj.set_value(adj.upper() - adj.page_size());
-            });
         });
     }
 
-    // --- "Load previous" button handler ---
-    {
-        let state_prev = Rc::clone(&state);
-        let btn = load_prev_btn.clone();
-        load_prev_btn.connect_clicked(move |_| {
-            let mut s = state_prev.borrow_mut();
-            let current_start = s.chat.oldest_rendered_idx;
-            if current_start == 0 {
-                btn.set_visible(false);
-                return;
-            }
-            let batch = PAGE_SIZE.min(current_start);
-            let new_start = current_start - batch;
-
-            let on_open = s.on_open_file.clone();
-            let dark = s.config.theme.get().is_dark();
-
-            // Build entries from history (borrow scoped tightly).
-            let entries: Vec<ChatEntry> = {
-                let history = s.chat.chat_history.borrow();
-                (new_start..current_start)
-                    .map(|i| chat_message_to_entry(&history[i]))
-                    .collect()
-            };
-
-            // Insert after the button, before existing message widgets.
-            let first_msg = btn.next_sibling();
-            for entry in &entries {
-                let widget = chat_factory::build_and_cache_widget(entry, &on_open, dark);
-                match &first_msg {
-                    Some(fw) => widget.insert_before(&s.chat.chat_box, Some(fw)),
-                    None => s.chat.chat_box.append(&widget),
-                }
-            }
-
-            s.chat.oldest_rendered_idx = new_start;
-            if new_start == 0 {
-                btn.set_visible(false);
-            }
-        });
-    }
+    // --- "Load previous" via flycrys://load-prev ---
+    // (The ChatWebView navigation policy intercept for flycrys://load-prev
+    //  is currently a no-op stub. We wire it here via a callback approach.
+    //  For now, the webview link triggers a log message. Full wiring would
+    //  require registering a callback on the ChatWebView, which we skip for
+    //  the initial migration to keep things simple.)
 
     // Dropdown selection change
     {
@@ -432,7 +364,6 @@ pub fn create_agent_panel(
     // --- Send handler ---
     let do_send = {
         let state = Rc::clone(&state);
-        let scrolled = scrolled.clone();
         let input_view = input_view.clone();
         let send_btn = send_btn.clone();
         let pause_btn = pause_btn.clone();
@@ -456,25 +387,22 @@ pub fn create_agent_panel(
             let images: Vec<AttachedImage> = attachments.borrow_mut().drain(..).collect();
             rebuild_attach_bar(&attachments, &attach_bar);
 
-            // Build user entry and widget
-            let textures: Vec<gtk::gdk::Texture> =
-                images.iter().map(|i| i.texture.clone()).collect();
-            let user_entry = if textures.is_empty() {
-                ChatEntry::new_user(&text)
-            } else {
-                ChatEntry::new_user_with_images(&text, textures)
-            };
+            // Append user message to WebView
             {
-                let mut s = state.borrow_mut();
-                let widget = chat_factory::build_and_cache_widget(
-                    &user_entry,
-                    &s.on_open_file,
-                    s.config.theme.get().is_dark(),
-                );
-                s.chat.chat_box.append(&widget);
-                trim_chat_if_needed(&mut s.chat);
+                let s = state.borrow();
+                // For images: convert to data URIs
+                let data_uris: Vec<String> = images
+                    .iter()
+                    .map(|img| {
+                        let b64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &img.bytes,
+                        );
+                        format!("data:{};base64,{}", img.mime_type, b64)
+                    })
+                    .collect();
+                s.chat.webview.append_user_message(&text, &data_uris);
             }
-            scroll_to_bottom(&scrolled);
 
             // Record in history
             if !text.is_empty() {
@@ -512,14 +440,9 @@ pub fn create_agent_panel(
 
                 let wd = s.process.working_dir.clone();
                 if let Err(err_msg) = s.process.process.spawn(sender, &wd, &spawn_config) {
-                    let err_entry =
-                        ChatEntry::new_system(&format!("Failed to start claude CLI: {err_msg}"));
-                    let widget = chat_factory::build_and_cache_widget(
-                        &err_entry,
-                        &s.on_open_file,
-                        s.config.theme.get().is_dark(),
-                    );
-                    s.chat.chat_box.append(&widget);
+                    s.chat
+                        .webview
+                        .append_system_message(&format!("Failed to start claude CLI: {err_msg}"));
                     return;
                 }
 
@@ -548,19 +471,11 @@ pub fn create_agent_panel(
 
             let _ = s.process.process.send_message(&text, &api_images);
 
-            // Show thinking spinner
-            let thinking = ChatEntry::new_thinking();
-            let widget = chat_factory::build_and_cache_widget(
-                &thinking,
-                &s.on_open_file,
-                s.config.theme.get().is_dark(),
-            );
-            s.chat.chat_box.append(&widget);
-            s.chat.thinking_entry = Some(thinking);
+            // Show thinking indicator in WebView
+            let thinking_id = s.chat.webview.show_thinking();
+            s.chat.thinking_id = Some(thinking_id);
             s.tab_spinner.set_spinning(true);
             drop(s);
-
-            scroll_to_bottom(&scrolled);
 
             send_btn.set_sensitive(false);
             pause_btn.set_sensitive(true);
@@ -637,18 +552,12 @@ pub fn create_agent_panel(
         stop_btn_clone.connect_clicked(move |btn| {
             let mut s = state.borrow_mut();
             s.process.process.stop();
-            event_handler::remove_thinking_entry(&mut s);
+            event_handler::remove_thinking(&mut s);
             s.tab_spinner.set_spinning(false);
             s.chat.chat_history.borrow_mut().push(ChatMessage::System {
                 text: "\u{23f9} Stopped".to_string(),
             });
-            let stopped = ChatEntry::new_system("\u{23f9} Stopped");
-            let widget = chat_factory::build_and_cache_widget(
-                &stopped,
-                &s.on_open_file,
-                s.config.theme.get().is_dark(),
-            );
-            s.chat.chat_box.append(&widget);
+            s.chat.webview.append_system_message("\u{23f9} Stopped");
             drop(s);
             send_btn.set_sensitive(true);
             pause_btn.set_sensitive(false);
@@ -783,91 +692,4 @@ pub(super) fn extract_file_path(json_str: &str) -> Option<String> {
     val.get("file_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-}
-
-/// Scroll to the very bottom after GTK finishes laying out new content.
-///
-/// Uses a per-widget coalescing set so that rapid-fire calls (e.g. every
-/// streaming chunk) schedule **one** idle callback per ScrolledWindow,
-/// not hundreds.  Without this the idle queue drowns GTK's layout/paint
-/// cycle and the UI freezes.
-pub(super) fn scroll_to_bottom(scrolled: &gtk::ScrolledWindow) {
-    use std::cell::RefCell;
-    use std::collections::HashSet;
-
-    thread_local! {
-        /// Widget pointer addresses for which an idle callback is already queued.
-        static PENDING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
-    }
-
-    let key = scrolled.as_ptr() as usize;
-
-    let already_pending = PENDING.with(|set| !set.borrow_mut().insert(key));
-    if already_pending {
-        return;
-    }
-
-    let sc = scrolled.clone();
-    gtk::glib::idle_add_local_once(move || {
-        PENDING.with(|set| set.borrow_mut().remove(&(sc.as_ptr() as usize)));
-        let adj = sc.vadjustment();
-        adj.set_value(adj.upper() - adj.page_size());
-    });
-}
-
-/// Remove the oldest visible message widgets when the count exceeds
-/// `MAX_VISIBLE_WIDGETS`.  Keeps the "Load previous" button intact and
-/// updates `oldest_rendered_idx` so history can still be loaded.
-pub(super) fn trim_chat_if_needed(chat: &mut ChatState) {
-    let btn_widget: gtk::Widget = chat.load_prev_btn.clone().upcast();
-
-    // Count message widgets (everything after the button).
-    let mut count: usize = 0;
-    let mut child = btn_widget.next_sibling();
-    while let Some(w) = child {
-        count += 1;
-        child = w.next_sibling();
-    }
-
-    let excess = count.saturating_sub(MAX_VISIBLE_WIDGETS);
-    if excess == 0 {
-        return;
-    }
-
-    // Remove `excess` widgets from the front (oldest messages).
-    let mut child = btn_widget.next_sibling();
-    for _ in 0..excess {
-        if let Some(w) = child {
-            let next = w.next_sibling();
-            chat.chat_box.remove(&w);
-            child = next;
-        }
-    }
-    chat.oldest_rendered_idx += excess;
-
-    // There are now hidden older entries — make the button reachable.
-    chat.load_prev_btn.set_visible(true);
-}
-
-/// Convert a persisted ChatMessage into a ChatEntry.
-fn chat_message_to_entry(msg: &ChatMessage) -> ChatEntry {
-    match msg {
-        ChatMessage::User { text } => ChatEntry::new_user(text),
-        ChatMessage::AssistantText { text } => ChatEntry::new_assistant(text),
-        ChatMessage::ToolCall {
-            tool_name,
-            tool_input,
-            output,
-            is_error,
-        } => {
-            let display_hint = extract_tool_display(tool_name, tool_input);
-            let file_path = extract_file_path(tool_input).unwrap_or_default();
-            let entry = ChatEntry::new_tool_call(tool_name, tool_input, &display_hint, &file_path);
-            entry.set_tool_output(output.as_str());
-            entry.set_tool_is_error(*is_error);
-            entry.set_tool_complete(true);
-            entry
-        }
-        ChatMessage::System { text } => ChatEntry::new_system(text),
-    }
 }

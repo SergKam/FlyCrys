@@ -168,6 +168,86 @@ pub fn diff_to_pango(old_string: &str, new_string: &str, file_path: &str) -> Str
     })
 }
 
+/// Generate HTML for a diff between old and new strings,
+/// with syntax highlighting based on file extension.
+pub fn diff_to_html(old_string: &str, new_string: &str, file_path: &str) -> String {
+    fn escape_html(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
+    SYNTAX_SET.with(|default_ss| {
+        CUSTOM_SYNTAX_SET.with(|custom_ss| {
+            THEME_SET.with(|ts| {
+                let theme = &ts.themes[LIGHT_THEME];
+                let ext = file_path.rsplit('.').next().unwrap_or("");
+                let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
+
+                let mut out = String::new();
+
+                // Old lines (removed) — red background
+                {
+                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+                    for line in old_string.lines() {
+                        out.push_str("<div class=\"diff-del\"><span style=\"color:#b31d28;font-weight:bold\">- </span>");
+                        let line_nl = format!("{}\n", line);
+                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                            for (style, text) in regions {
+                                let text = text.trim_end_matches('\n');
+                                if text.is_empty() {
+                                    continue;
+                                }
+                                let fg = style.foreground;
+                                out.push_str(&format!(
+                                    "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
+                                    fg.r,
+                                    fg.g,
+                                    fg.b,
+                                    escape_html(text)
+                                ));
+                            }
+                        } else {
+                            out.push_str(&escape_html(line));
+                        }
+                        out.push_str("</div>");
+                    }
+                }
+
+                // New lines (added) — green background
+                {
+                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+                    for line in new_string.lines() {
+                        out.push_str("<div class=\"diff-add\"><span style=\"color:#22863a;font-weight:bold\">+ </span>");
+                        let line_nl = format!("{}\n", line);
+                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                            for (style, text) in regions {
+                                let text = text.trim_end_matches('\n');
+                                if text.is_empty() {
+                                    continue;
+                                }
+                                let fg = style.foreground;
+                                out.push_str(&format!(
+                                    "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
+                                    fg.r,
+                                    fg.g,
+                                    fg.b,
+                                    escape_html(text)
+                                ));
+                            }
+                        } else {
+                            out.push_str(&escape_html(line));
+                        }
+                        out.push_str("</div>");
+                    }
+                }
+
+                out
+            })
+        })
+    })
+}
+
 /// Resolve an extension to a (SyntaxSet, SyntaxReference) pair.
 ///
 /// Checks the default built-in set first, then the custom set (TypeScript, etc.),

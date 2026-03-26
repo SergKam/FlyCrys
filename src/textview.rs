@@ -292,13 +292,17 @@ pub fn load_preview(preview_scroll: &gtk::ScrolledWindow, file_path: &str, is_da
     match is_previewable(file_path) {
         PreviewKind::Markdown => {
             if let Ok(content) = std::fs::read_to_string(file_path) {
-                let widget_box = markdown::md_to_widget_box_deferred(&content, is_dark, None);
-                widget_box.set_valign(gtk::Align::Start);
-                widget_box.set_margin_start(12);
-                widget_box.set_margin_end(12);
-                widget_box.set_margin_top(8);
-                widget_box.set_margin_bottom(8);
-                preview_scroll.set_child(Some(&widget_box));
+                let html_body = markdown::md_to_html(&content, is_dark);
+                // Use a simple WebView for markdown preview.
+                let preview_webview =
+                    crate::chat_webview::ChatWebView::new(is_dark, std::rc::Rc::new(|_| {}));
+                let wv = preview_webview.widget().clone();
+                // Inject the rendered markdown as an assistant-style message.
+                let id = preview_webview.begin_stream();
+                preview_webview.finalize_stream(&id, &html_body);
+                wv.set_vexpand(true);
+                wv.set_hexpand(true);
+                preview_scroll.set_child(Some(&wv));
             }
         }
         PreviewKind::Image => {
