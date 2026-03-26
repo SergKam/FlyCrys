@@ -12,8 +12,8 @@ pub unsafe fn set_test_home(path: &std::path::Path) {
     std::env::set_var("XDG_CONFIG_HOME", path.join(".config"));
 }
 
-/// Helper: call md_to_pango with is_dark=false (light mode)
+/// Helper: call md_to_html with is_dark=false (light mode)
 #[allow(dead_code)]
-pub fn md_to_pango_light(md: &str) -> String {
-    flycrys::markdown::md_to_pango(md, false)
+pub fn md_to_html_light(md: &str) -> String {
+    flycrys::markdown::md_to_html(md, false)
 }

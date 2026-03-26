@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::chat_entry::ChatEntry;
+use crate::chat_webview::ChatWebView;
 use crate::config::types::{NotificationLevel, Theme};
 use crate::models::agent_config::AgentConfig;
 use crate::models::chat::ChatMessage;
@@ -25,25 +25,22 @@ pub(crate) struct TokenState {
     pub cost_label: gtk::Label,
 }
 
-/// Chat rendering state — simple box with manual pagination.
+/// Chat rendering state — uses ChatWebView.
 pub(crate) struct ChatState {
-    /// Vertical box holding [load_prev_btn, message widgets…].
-    pub chat_box: gtk::Box,
-    /// ScrolledWindow wrapping `chat_box`.
-    pub scrolled: gtk::ScrolledWindow,
-    /// "Load previous messages" button at the top of `chat_box`.
-    pub load_prev_btn: gtk::Button,
+    /// The WebView-based chat renderer.
+    pub webview: ChatWebView,
     /// Index of the oldest history entry currently rendered.
-    /// Entries `[oldest_rendered_idx .. history.len())` have widgets in the box.
     pub oldest_rendered_idx: usize,
-    /// The entry currently being streamed (assistant text).
-    pub current_streaming_entry: Option<ChatEntry>,
+    /// True while there is an active streaming block.
+    pub current_streaming: bool,
+    /// The element ID of the current streaming assistant message in the WebView.
+    pub current_stream_id: Option<String>,
     /// Accumulated raw markdown for the current streaming block.
     pub current_text: String,
-    /// Pending tool calls awaiting results. Key = tool call id.
-    pub pending_tools: HashMap<String, ChatEntry>,
-    /// Thinking spinner sentinel entry.
-    pub thinking_entry: Option<ChatEntry>,
+    /// Pending tool calls awaiting results. Key = tool call id, value = (name, input_json).
+    pub pending_tools: HashMap<String, (String, String)>,
+    /// The element ID of the current thinking indicator in the WebView.
+    pub thinking_id: Option<String>,
     /// Persistence-format chat history (written to disk on autosave).
     pub chat_history: Rc<RefCell<Vec<ChatMessage>>>,
 }
@@ -63,6 +60,7 @@ pub(crate) struct PanelState {
     pub chat: ChatState,
     pub config: PanelConfig,
     pub tab_spinner: gtk::Spinner,
+    #[allow(dead_code)]
     pub on_open_file: Rc<dyn Fn(&str)>,
     pub on_session_id_change: Rc<dyn Fn(Option<String>)>,
     pub on_profile_change: Rc<dyn Fn(&str)>,
