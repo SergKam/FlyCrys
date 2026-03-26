@@ -23,7 +23,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libvte-2.91-gtk4-dev libsoup-3.0-dev
+          sudo apt-get install -y libgtk-4-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev
 
       - uses: Swatinem/rust-cache@v2
 
@@ -52,6 +52,12 @@ jobs:
           echo "---"
           dpkg-deb --contents "$DEB_FILE"
 
+      - name: Prepare .deb assets
+        run: |
+          VERSIONED_DEB=$(ls target/debian/flycrys_*.deb)
+          cp "$VERSIONED_DEB" target/debian/flycrys_amd64.deb
+          echo "VERSIONED_DEB=$VERSIONED_DEB" >> $GITHUB_ENV
+
       - name: Build release binary tarball
         run: |
           ARCHIVE="flycrys-${GITHUB_REF_NAME}-x86_64-linux.tar.gz"
@@ -68,7 +74,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/debian/*.deb
+            target/debian/flycrys_amd64.deb
+            ${{ env.VERSIONED_DEB }}
             ${{ env.TARBALL }}
           generate_release_notes: true
           draft: false
