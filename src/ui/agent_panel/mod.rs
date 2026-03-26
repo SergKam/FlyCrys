@@ -45,6 +45,9 @@ pub fn create_agent_panel(
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     chat_history: Rc<RefCell<Vec<ChatMessage>>>,
     on_tool_result: Option<Rc<dyn Fn()>>,
+    // External labels living in the workspace status bar — the panel updates their text.
+    token_label: gtk::Label,
+    cost_label: gtk::Label,
 ) -> (gtk::Box, gtk::TextView) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(AGENT_PANEL_MIN_WIDTH);
@@ -175,14 +178,6 @@ pub fn create_agent_panel(
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
 
-    let token_label = gtk::Label::new(Some("\u{2013}"));
-    token_label.set_tooltip_text(Some("Context window usage"));
-    token_label.add_css_class("toolbar-info");
-
-    let cost_label = gtk::Label::new(Some("$0.00"));
-    cost_label.set_tooltip_text(Some("Session cost"));
-    cost_label.add_css_class("toolbar-info");
-
     let send_btn = gtk::Button::from_icon_name("go-next-symbolic");
     send_btn.set_tooltip_text(Some("Send (Ctrl+Enter)"));
     send_btn.add_css_class("suggested-action");
@@ -193,9 +188,6 @@ pub fn create_agent_panel(
     toolbar.append(&compact_btn);
     toolbar.append(&quick_btn);
     toolbar.append(&spacer);
-    toolbar.append(&token_label);
-    toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    toolbar.append(&cost_label);
     toolbar.append(&send_btn);
 
     panel.append(&header);

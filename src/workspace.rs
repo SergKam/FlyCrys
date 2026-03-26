@@ -485,6 +485,15 @@ impl Workspace {
             }) as Rc<dyn Fn()>
         });
 
+        // Status bar labels — created here, passed into the agent panel which updates them.
+        let token_label = gtk::Label::new(Some("\u{2013}"));
+        token_label.set_tooltip_text(Some("Context window usage"));
+        token_label.add_css_class("statusbar-item");
+
+        let cost_label = gtk::Label::new(Some("$0.00"));
+        cost_label.set_tooltip_text(Some("Session cost"));
+        cost_label.add_css_class("statusbar-item");
+
         // Agent panel
         let (agent_panel_1, agent_input_1) = {
             let profile = config.borrow().agent_1_profile.clone();
@@ -511,6 +520,8 @@ impl Workspace {
                 on_session,
                 Rc::clone(&chat_history),
                 on_tool_result,
+                token_label.clone(),
+                cost_label.clone(),
             )
         };
 
@@ -540,11 +551,52 @@ impl Workspace {
         outer_paned.set_shrink_start_child(false);
         outer_paned.set_shrink_end_child(false);
 
+        // ── Status bar ──
+        let status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        status_bar.add_css_class("statusbar");
+
+        // Root path (shortened to last 2 components)
+        let root_display = {
+            let p = working_dir.to_string_lossy();
+            let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() > 2 {
+                format!("…/{}", parts[parts.len() - 2..].join("/"))
+            } else {
+                p.to_string()
+            }
+        };
+        let path_label = gtk::Label::new(Some(&root_display));
+        path_label.set_tooltip_text(Some(&working_dir.to_string_lossy()));
+        path_label.add_css_class("statusbar-item");
+        path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        status_bar.append(&path_label);
+
+        // Git branch
+        if let Some(branch) = crate::services::git::current_branch(&working_dir) {
+            let branch_label = gtk::Label::new(None);
+            branch_label.set_use_markup(true);
+            branch_label.set_markup(&format!(
+                "<span foreground=\"#4a90d9\">\u{E0A0} {}</span>",
+                glib::markup_escape_text(&branch)
+            ));
+            branch_label.add_css_class("statusbar-item");
+            status_bar.append(&branch_label);
+        }
+
+        let status_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status_spacer.set_hexpand(true);
+        status_bar.append(&status_spacer);
+
+        status_bar.append(&token_label);
+        status_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        status_bar.append(&cost_label);
+
         // Root container
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_vexpand(true);
         root.set_hexpand(true);
         root.append(&outer_paned);
+        root.append(&status_bar);
 
         // --- Actions (scoped to this workspace via ActionGroup) ---
         let action_group = gio::SimpleActionGroup::new();

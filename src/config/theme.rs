@@ -30,6 +30,15 @@ fn light_css() -> &'static str {
     .git-added { color: #2ec27e; font-weight: bold; }
     .git-deleted { color: #e01b24; font-weight: bold; }
     .git-untracked { color: alpha(@window_fg_color, 0.45); }
+
+    /* ── Status bar ── */
+    .statusbar {
+        background-color: #f0f0f0;
+        border-top: 1px solid #d0d0d0;
+        padding: 2px 8px;
+        min-height: 20px;
+    }
+    .statusbar-item { font-size: small; color: alpha(@window_fg_color, 0.65); }
     "#
 }
 
@@ -55,5 +64,14 @@ fn dark_css() -> &'static str {
     .git-added { color: #2ec27e; font-weight: bold; }
     .git-deleted { color: #e01b24; font-weight: bold; }
     .git-untracked { color: alpha(@window_fg_color, 0.45); }
+
+    /* ── Status bar ── */
+    .statusbar {
+        background-color: #2a2a2a;
+        border-top: 1px solid #444444;
+        padding: 2px 8px;
+        min-height: 20px;
+    }
+    .statusbar-item { font-size: small; color: alpha(@window_fg_color, 0.55); }
     "#
 }

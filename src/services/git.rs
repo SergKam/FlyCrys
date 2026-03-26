@@ -22,6 +22,22 @@ pub struct GitStatusEntry {
     pub raw_status: String,
 }
 
+/// Return the current git branch name (e.g. "main"), or `None` if not a repo / detached.
+pub fn current_branch(working_dir: &Path) -> Option<String> {
+    Command::new("git")
+        .args([
+            "-C",
+            &working_dir.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// Check if a given path is inside a git repository.
 pub fn is_git_repo(working_dir: &Path) -> bool {
     Command::new("git")
