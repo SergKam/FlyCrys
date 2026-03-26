@@ -233,7 +233,7 @@ fn create_file_tree(
         expander.set_list_row(Some(&row));
         let hbox = expander.child().and_downcast::<gtk::Box>().unwrap();
         let icon = hbox.first_child().and_downcast::<gtk::Image>().unwrap();
-        icon.set_icon_name(Some(&entry.icon_name()));
+        icon.set_from_gicon(&content_type_icon(&entry));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&entry.name());
     });
@@ -281,7 +281,7 @@ fn build_search_factory() -> gtk::SignalListItemFactory {
         let entry = list_item.item().and_downcast::<FileEntry>().unwrap();
         let hbox = list_item.child().and_downcast::<gtk::Box>().unwrap();
         let icon = hbox.first_child().and_downcast::<gtk::Image>().unwrap();
-        icon.set_icon_name(Some(&entry.icon_name()));
+        icon.set_from_gicon(&content_type_icon(&entry));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&entry.name());
         label.set_tooltip_text(Some(&entry.path()));
@@ -404,6 +404,16 @@ fn search_files_recursive(
             search_files_recursive(base, &path, query, limit, results);
         }
     }
+}
+
+/// Return a system-themed icon for the given file entry based on its MIME type.
+/// Uses `gio::content_type_guess` (filename-only, no disk I/O).
+fn content_type_icon(entry: &FileEntry) -> gio::Icon {
+    if entry.is_dir() {
+        return gio::content_type_get_icon("inode/directory");
+    }
+    let (ct, _uncertain) = gio::content_type_guess(Some(&entry.name()), None::<&[u8]>);
+    gio::content_type_get_icon(&ct)
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────

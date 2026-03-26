@@ -225,7 +225,8 @@ impl Workspace {
         wire_pane_position_tracking(&paned, &outer_paned, &right_paned, &config);
 
         // Load initial file if restored from session
-        if let Some(ref path) = config.borrow().open_file.clone() {
+        let initial_file = config.borrow().open_file.clone();
+        if let Some(ref path) = initial_file {
             on_open_file(path);
         }
 
