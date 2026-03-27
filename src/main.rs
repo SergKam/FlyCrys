@@ -41,6 +41,23 @@ fn main() -> glib::ExitCode {
                 break;
             }
         }
+        // Also add the data/icons/hicolor path so the system icon theme
+        // finds "flycrys" for the taskbar/window icon during development.
+        let hicolor_candidates = [
+            exe_dir.as_ref().map(|d| d.join("../data/icons")),
+            Some(std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/data/icons"
+            ))),
+        ];
+        for candidate in hicolor_candidates.into_iter().flatten() {
+            if candidate.is_dir() {
+                icon_theme.add_search_path(&candidate);
+                break;
+            }
+        }
+        // Set the default window icon so taskbar/dock shows it
+        gtk::Window::set_default_icon_name("flycrys");
     });
 
     app.connect_activate(build_ui);
@@ -372,7 +389,7 @@ fn build_ui(app: &gtk::Application) {
     let mut window_builder = gtk::ApplicationWindow::builder()
         .application(app)
         .title("FlyCrys")
-        .icon_name(APP_ID)
+        .icon_name("flycrys")
         .child(&notebook);
 
     if !app_config.window_maximized {
@@ -382,6 +399,21 @@ fn build_ui(app: &gtk::Application) {
     }
 
     let window = window_builder.build();
+
+    // Register bundled icons so GTK can find "flycrys" icon by name
+    {
+        let display = gtk::gdk::Display::default().unwrap();
+        let theme = gtk::IconTheme::for_display(&display);
+        theme.add_search_path(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/icons/hicolor"),
+        );
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(base) = exe.parent()
+        {
+            theme.add_search_path(base.join("data/icons/hicolor"));
+            theme.add_search_path(base.join("../data/icons/hicolor"));
+        }
+    }
 
     if app_config.window_maximized {
         window.maximize();
@@ -523,36 +555,65 @@ fn build_settings_menu(
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|| "not found".to_string());
 
-            // Load the app logo from the icons directory
-            let logo = load_about_logo();
-
-            let mut builder = gtk::AboutDialog::builder()
-                .program_name("FlyCrys")
-                .version(env!("CARGO_PKG_VERSION"))
-                .comments(format!(
-                    "Fast like a fly, solid like a crystal\n\
-                     GTK4 workspace with AI agent integration\n\n\
-                     Claude CLI: {}",
-                    claude_version
-                ))
-                .website("https://github.com/SergKam/FlyCrys")
-                .website_label("GitHub")
-                .license_type(gtk::License::MitX11)
-                .modal(true);
-
-            if let Some(ref texture) = logo {
-                builder = builder.logo(texture);
-            }
-
-            let about = builder.build();
+            let about = gtk::Window::builder()
+                .title("About FlyCrys")
+                .modal(true)
+                .resizable(false)
+                .default_width(480)
+                .build();
 
             if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
                 about.set_transient_for(Some(&window));
             }
-            about.present();
 
-            // GTK4 pre-selects the program name label; steal focus to deselect it.
-            gtk::prelude::GtkWindowExt::set_focus(&about, gtk::Widget::NONE);
+            let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
+            vbox.set_margin_top(16);
+            vbox.set_margin_bottom(16);
+            vbox.set_margin_start(24);
+            vbox.set_margin_end(24);
+            vbox.set_halign(gtk::Align::Center);
+
+            // Logo — large
+            if let Some(texture) = load_about_logo() {
+                let picture = gtk::Picture::for_paintable(&texture);
+                picture.set_content_fit(gtk::ContentFit::Contain);
+                picture.set_size_request(420, 320);
+                vbox.append(&picture);
+            }
+
+            // Title
+            let title = gtk::Label::new(Some("FlyCrys"));
+            title.add_css_class("title-1");
+            vbox.append(&title);
+
+            // Version
+            let version = gtk::Label::new(Some(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+            version.add_css_class("dim-label");
+            vbox.append(&version);
+
+            // Description
+            let desc = gtk::Label::new(Some(&format!(
+                "Fast like a fly, solid like a crystal\n\
+                 GTK4 workspace with AI agent integration\n\n\
+                 Claude CLI: {}",
+                claude_version
+            )));
+            desc.set_justify(gtk::Justification::Center);
+            desc.set_wrap(true);
+            vbox.append(&desc);
+
+            // GitHub link
+            let link = gtk::LinkButton::with_label("https://github.com/SergKam/FlyCrys", "GitHub");
+            vbox.append(&link);
+
+            // License
+            let license = gtk::Label::new(Some("MIT License"));
+            license.add_css_class("dim-label");
+            license.add_css_class("caption");
+            vbox.append(&license);
+
+            about.set_child(Some(&vbox));
+            about.present();
         });
     }
 
@@ -630,18 +691,15 @@ fn create_tab_label(
     hbox
 }
 
-/// Load the app logo for the About dialog from the icons directory.
+/// Load the app logo for the About dialog.
 fn load_about_logo() -> Option<gtk::gdk::Texture> {
     let exe_dir = std::env::current_exe().ok()?;
     let base = exe_dir.parent()?;
-    // Try locations relative to the binary and the source tree
     let candidates = [
-        base.join("icons/hicolor/256x256/apps/com.flycrys.app.png"),
-        base.join("../icons/hicolor/256x256/apps/com.flycrys.app.png"),
-        std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/icons/hicolor/256x256/apps/com.flycrys.app.png"
-        )),
+        base.join("data/about-logo.png"),
+        base.join("../data/about-logo.png"),
+        std::path::PathBuf::from("/usr/share/flycrys/data/about-logo.png"),
+        std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/data/about-logo.png")),
     ];
     for path in &candidates {
         if path.is_file() {

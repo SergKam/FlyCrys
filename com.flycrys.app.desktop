@@ -2,6 +2,6 @@
 Name=FlyCrys
 Comment=GTK4 file viewer with agent panel
 Exec=flycrys
-Icon=com.flycrys.app
+Icon=flycrys
 Type=Application
 Categories=Development;Utility;

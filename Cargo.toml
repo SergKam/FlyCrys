@@ -1,6 +1,6 @@
 [package]
 name = "flycrys"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Lightning-fast, Linux-native agentic UI on top of Claude Code CLI"
 license = "MIT"
@@ -43,9 +43,10 @@ priority = "optional"
 assets = [
     ["target/release/flycrys", "usr/bin/", "755"],
     ["com.flycrys.app.desktop", "usr/share/applications/", "644"],
-    ["icons/hicolor/48x48/apps/com.flycrys.app.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
-    ["icons/hicolor/128x128/apps/com.flycrys.app.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
-    ["icons/hicolor/256x256/apps/com.flycrys.app.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
-    ["icons/hicolor/512x512/apps/com.flycrys.app.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["data/about-logo.png", "usr/share/flycrys/data/about-logo.png", "644"],
+    ["data/icons/hicolor/48x48/apps/flycrys.png", "usr/share/icons/hicolor/48x48/apps/flycrys.png", "644"],
+    ["data/icons/hicolor/128x128/apps/flycrys.png", "usr/share/icons/hicolor/128x128/apps/flycrys.png", "644"],
+    ["data/icons/hicolor/256x256/apps/flycrys.png", "usr/share/icons/hicolor/256x256/apps/flycrys.png", "644"],
+    ["data/icons/hicolor/512x512/apps/flycrys.png", "usr/share/icons/hicolor/512x512/apps/flycrys.png", "644"],
     ["README.md", "usr/share/doc/flycrys/README.md", "644"],
 ]
