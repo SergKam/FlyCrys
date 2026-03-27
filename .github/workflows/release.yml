@@ -65,7 +65,7 @@ jobs:
             -C target/release flycrys \
             -C "$GITHUB_WORKSPACE" \
             com.flycrys.app.desktop \
-            icons/ \
+            data/ \
             LICENSE \
             README.md
           echo "TARBALL=$ARCHIVE" >> $GITHUB_ENV
