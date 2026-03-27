@@ -6,7 +6,7 @@ A Linux-native GUI for working with Claude Code agents. Built in Rust + GTK4. No
 
 FlyCrys is not an IDE. It doesn't edit files. Agents do. You talk to agents, they write the code. FlyCrys gives you a minimal workspace to manage that workflow without getting in the way.
 
-![FlyCrys workspace](docs/screenshot.png)
+![FlyCrys workspace](docs/screenshot-workspace.png)
 
 ## Why this exists
 
