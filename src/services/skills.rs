@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::models::slash_command::{SlashCommand, SlashCommandSource};
+use crate::models::slash_command::{SlashCommand, SlashCommandKind, SlashCommandSource};
 
 /// Built-in Claude CLI slash commands relevant to a GUI context.
 /// TUI-only commands (vim, terminal-setup, bug, login/logout, doctor,
@@ -17,6 +17,8 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("status", "Show account and session status"),
 ];
 
+// ── Discovery ────────────────────────────────────────────────────────────────
+
 /// Discover all available slash commands from built-ins, user, project, and plugins.
 pub fn discover_slash_commands(working_dir: &Path) -> Vec<SlashCommand> {
     let mut commands = Vec::new();
@@ -28,6 +30,8 @@ pub fn discover_slash_commands(working_dir: &Path) -> Vec<SlashCommand> {
             description: (*desc).to_string(),
             argument_hint: String::new(),
             source: SlashCommandSource::BuiltIn,
+            kind: SlashCommandKind::Command,
+            path: None,
         });
     }
 
@@ -68,7 +72,111 @@ pub fn discover_slash_commands(working_dir: &Path) -> Vec<SlashCommand> {
     commands
 }
 
-/// Scan a `commands/` directory for `*.md` files.
+// ── CRUD ─────────────────────────────────────────────────────────────────────
+
+/// Read the full body content of a command/skill .md file.
+pub fn read_command_body(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
+}
+
+/// Write a command .md file with YAML frontmatter.
+/// Returns the path of the written file.
+pub fn save_command(
+    base_dir: &Path,
+    name: &str,
+    description: &str,
+    argument_hint: &str,
+    body: &str,
+    kind: SlashCommandKind,
+) -> Result<PathBuf, String> {
+    let safe_name = sanitize_filename(name);
+
+    let file_path = match kind {
+        SlashCommandKind::Command => {
+            let dir = base_dir.join("commands");
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
+            dir.join(format!("{safe_name}.md"))
+        }
+        SlashCommandKind::Skill => {
+            let dir = base_dir.join("skills").join(&safe_name);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
+            dir.join("SKILL.md")
+        }
+    };
+
+    let mut content = String::from("---\n");
+    content.push_str(&format!("name: {name}\n"));
+    if !description.is_empty() {
+        content.push_str(&format!(
+            "description: \"{}\"\n",
+            description.replace('"', "\\\"")
+        ));
+    }
+    if !argument_hint.is_empty() {
+        content.push_str(&format!(
+            "argument-hint: \"{}\"\n",
+            argument_hint.replace('"', "\\\"")
+        ));
+    }
+    content.push_str("---\n");
+    if !body.is_empty() {
+        content.push('\n');
+        content.push_str(body);
+        if !body.ends_with('\n') {
+            content.push('\n');
+        }
+    }
+
+    std::fs::write(&file_path, &content)
+        .map_err(|e| format!("Failed to write {}: {e}", file_path.display()))?;
+
+    Ok(file_path)
+}
+
+/// Delete a command or skill from disk.
+pub fn delete_command(path: &Path, kind: SlashCommandKind) -> Result<(), String> {
+    match kind {
+        SlashCommandKind::Command => std::fs::remove_file(path)
+            .map_err(|e| format!("Failed to delete {}: {e}", path.display())),
+        SlashCommandKind::Skill => {
+            // path points to SKILL.md; remove parent directory
+            let parent = path
+                .parent()
+                .ok_or_else(|| "Invalid skill path".to_string())?;
+            std::fs::remove_dir_all(parent)
+                .map_err(|e| format!("Failed to delete {}: {e}", parent.display()))
+        }
+    }
+}
+
+/// Return the base `.claude` directory for a given source.
+pub fn claude_dir_for_source(source: SlashCommandSource, working_dir: &Path) -> Option<PathBuf> {
+    match source {
+        SlashCommandSource::User => dirs::home_dir().map(|h| h.join(".claude")),
+        SlashCommandSource::Project => Some(working_dir.join(".claude")),
+        _ => None,
+    }
+}
+
+/// Extract the body (everything after the closing `---`) from file content.
+pub fn extract_body(content: &str) -> String {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return content.to_string();
+    }
+    let after_open = trimmed[3..].trim_start_matches(['\n', '\r']);
+    if let Some(close_idx) = after_open.find("\n---") {
+        let after_close = &after_open[close_idx + 4..];
+        after_close.trim_start_matches(['\n', '\r']).to_string()
+    } else {
+        content.to_string()
+    }
+}
+
+// ── Scanning (internal) ──────────────────────────────────────────────────────
+
 fn scan_commands_dir(dir: &Path, source: SlashCommandSource, out: &mut Vec<SlashCommand>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -78,13 +186,12 @@ fn scan_commands_dir(dir: &Path, source: SlashCommandSource, out: &mut Vec<Slash
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        if let Some(cmd) = parse_command_file(&path, source) {
+        if let Some(cmd) = parse_command_file(&path, source, SlashCommandKind::Command) {
             out.push(cmd);
         }
     }
 }
 
-/// Scan a `skills/` directory for `*/SKILL.md` subdirectories.
 fn scan_skills_dir(dir: &Path, source: SlashCommandSource, out: &mut Vec<SlashCommand>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -92,25 +199,22 @@ fn scan_skills_dir(dir: &Path, source: SlashCommandSource, out: &mut Vec<SlashCo
     for entry in entries.flatten() {
         let skill_file = entry.path().join("SKILL.md");
         if skill_file.exists()
-            && let Some(cmd) = parse_command_file(&skill_file, source)
+            && let Some(cmd) = parse_command_file(&skill_file, source, SlashCommandKind::Skill)
         {
             out.push(cmd);
         }
     }
 }
 
-/// Recursively scan plugin cache for commands/ and skills/ directories.
 fn scan_plugins(cache_dir: &Path, out: &mut Vec<SlashCommand>) {
     let Ok(entries) = std::fs::read_dir(cache_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let plugin_dir = entry.path();
-        if !plugin_dir.is_dir() {
-            continue;
+        if plugin_dir.is_dir() {
+            find_skill_dirs(&plugin_dir, 0, out);
         }
-        // Plugin cache structure can be nested; search recursively up to depth 4
-        find_skill_dirs(&plugin_dir, 0, out);
     }
 }
 
@@ -139,16 +243,17 @@ fn find_skill_dirs(dir: &Path, depth: u32, out: &mut Vec<SlashCommand>) {
     }
 }
 
-/// Parse a `.md` file for YAML frontmatter (name, description, argument-hint).
-/// Falls back to filename stem as name if no frontmatter.
-fn parse_command_file(path: &PathBuf, source: SlashCommandSource) -> Option<SlashCommand> {
+fn parse_command_file(
+    path: &PathBuf,
+    source: SlashCommandSource,
+    kind: SlashCommandKind,
+) -> Option<SlashCommand> {
     let content = std::fs::read_to_string(path).ok()?;
     let file_stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
 
-    // For SKILL.md, use the parent directory name as fallback
     let default_name = if file_stem.eq_ignore_ascii_case("SKILL") || file_stem == "skill" {
         path.parent()
             .and_then(|p| p.file_name())
@@ -165,11 +270,13 @@ fn parse_command_file(path: &PathBuf, source: SlashCommandSource) -> Option<Slas
         description,
         argument_hint,
         source,
+        kind,
+        path: Some(path.clone()),
     })
 }
 
-/// Extract name, description, and argument-hint from YAML frontmatter.
-/// Returns (name, description, argument_hint).
+// ── Frontmatter parsing ──────────────────────────────────────────────────────
+
 fn parse_frontmatter(content: &str, default_name: &str) -> (String, String, String) {
     let mut name = default_name.to_string();
     let mut description = String::new();
@@ -177,7 +284,6 @@ fn parse_frontmatter(content: &str, default_name: &str) -> (String, String, Stri
 
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        // No frontmatter; try first heading as description
         for line in content.lines() {
             let line = line.trim();
             if let Some(heading) = line.strip_prefix("# ") {
@@ -192,7 +298,6 @@ fn parse_frontmatter(content: &str, default_name: &str) -> (String, String, Stri
         return (name, description, argument_hint);
     }
 
-    // Find closing ---
     let after_open = &trimmed[3..].trim_start_matches(['\n', '\r']);
     let Some(close_idx) = after_open.find("\n---") else {
         return (name, description, argument_hint);
@@ -217,7 +322,6 @@ fn parse_frontmatter(content: &str, default_name: &str) -> (String, String, Stri
         }
     }
 
-    // If description was multiline (|), grab the first non-empty indented line
     if description.is_empty() {
         let mut in_desc = false;
         for line in frontmatter.lines() {
@@ -243,8 +347,8 @@ fn parse_frontmatter(content: &str, default_name: &str) -> (String, String, Stri
     (name, description, argument_hint)
 }
 
-/// Deduplicate commands by name. Higher-priority sources override lower ones.
-/// Priority: Project > User > Plugin > BuiltIn.
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 fn deduplicate_and_sort(commands: &mut Vec<SlashCommand>) {
     fn priority(source: SlashCommandSource) -> u8 {
         match source {
@@ -255,7 +359,6 @@ fn deduplicate_and_sort(commands: &mut Vec<SlashCommand>) {
         }
     }
 
-    // Sort by name, then by priority descending so highest-priority comes first
     commands.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -263,9 +366,23 @@ fn deduplicate_and_sort(commands: &mut Vec<SlashCommand>) {
             .then_with(|| priority(b.source).cmp(&priority(a.source)))
     });
 
-    // Deduplicate: keep first occurrence (highest priority) of each name
     commands.dedup_by(|b, a| a.name.eq_ignore_ascii_case(&b.name));
 }
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -306,12 +423,16 @@ mod tests {
                 description: "built-in".into(),
                 argument_hint: String::new(),
                 source: SlashCommandSource::BuiltIn,
+                kind: SlashCommandKind::Command,
+                path: None,
             },
             SlashCommand {
                 name: "test".into(),
                 description: "project".into(),
                 argument_hint: String::new(),
                 source: SlashCommandSource::Project,
+                kind: SlashCommandKind::Command,
+                path: None,
             },
         ];
         deduplicate_and_sort(&mut cmds);
@@ -321,12 +442,80 @@ mod tests {
 
     #[test]
     fn test_builtin_commands_present() {
-        // Use a temp dir with no .claude/ to get only builtins
         let tmp = std::env::temp_dir().join("flycrys_test_empty_dir");
         let _ = std::fs::create_dir_all(&tmp);
         let cmds = discover_slash_commands(&tmp);
         assert!(cmds.iter().any(|c| c.name == "help"));
         assert!(cmds.iter().any(|c| c.name == "compact"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_extract_body() {
+        let content = "---\nname: foo\n---\nHello world\n";
+        assert_eq!(extract_body(content), "Hello world\n");
+    }
+
+    #[test]
+    fn test_extract_body_no_frontmatter() {
+        let content = "Just plain text.";
+        assert_eq!(extract_body(content), "Just plain text.");
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("My Command!"), "my-command-");
+        assert_eq!(sanitize_filename("test_cmd-2"), "test_cmd-2");
+    }
+
+    #[test]
+    fn test_save_and_read_command() {
+        let tmp = std::env::temp_dir().join("flycrys_test_save_cmd");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let path = save_command(
+            &tmp,
+            "test-cmd",
+            "A test",
+            "<arg>",
+            "Body text",
+            SlashCommandKind::Command,
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        let content = read_command_body(&path).unwrap();
+        assert!(content.contains("name: test-cmd"));
+        assert!(content.contains("Body text"));
+
+        delete_command(&path, SlashCommandKind::Command).unwrap();
+        assert!(!path.exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_save_and_delete_skill() {
+        let tmp = std::env::temp_dir().join("flycrys_test_save_skill");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let path = save_command(
+            &tmp,
+            "my-skill",
+            "A skill",
+            "",
+            "Skill body",
+            SlashCommandKind::Skill,
+        )
+        .unwrap();
+        assert!(path.exists());
+        assert!(path.ends_with("skills/my-skill/SKILL.md"));
+
+        delete_command(&path, SlashCommandKind::Skill).unwrap();
+        assert!(!path.parent().unwrap().exists());
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

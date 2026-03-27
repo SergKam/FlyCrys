@@ -1,6 +1,7 @@
 use gtk::gio;
 use gtk::glib;
 use gtk4 as gtk;
+use notify::Watcher;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -733,11 +734,46 @@ fn create_status_bar(
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     bar.append(cost_label);
 
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    let branch_label = gtk::Label::new(None);
+    branch_label.add_css_class("statusbar-item");
     if let Some(branch) = crate::services::git::current_branch(working_dir) {
-        bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        let branch_label = gtk::Label::new(Some(&format!("git: {branch}")));
-        branch_label.add_css_class("statusbar-item");
-        bar.append(&branch_label);
+        branch_label.set_text(&format!("git: {branch}"));
+    }
+    bar.append(&branch_label);
+
+    // Watch .git/HEAD for branch changes (instant update via inotify).
+    {
+        let git_head = working_dir.join(".git").join("HEAD");
+        if git_head.exists() {
+            let bl = branch_label.clone();
+            let wd = working_dir.to_path_buf();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let watcher = notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+                if let Ok(ev) = res
+                    && (ev.kind.is_modify() || ev.kind.is_create())
+                {
+                    let _ = tx.send(());
+                }
+            });
+            if let Ok(mut w) = watcher {
+                let _ = w.watch(&git_head, notify::RecursiveMode::NonRecursive);
+                // Keep watcher alive by moving into the polling closure.
+                glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                    let _keep = &w; // prevent drop
+                    if rx.try_recv().is_ok() {
+                        // Drain any extra events
+                        while rx.try_recv().is_ok() {}
+                        if let Some(branch) = crate::services::git::current_branch(&wd) {
+                            bl.set_text(&format!("git: {branch}"));
+                        } else {
+                            bl.set_text("");
+                        }
+                    }
+                    glib::ControlFlow::Continue
+                });
+            }
+        }
     }
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);

@@ -463,27 +463,34 @@ pub fn create_agent_panel(
     let slash_commands = crate::services::skills::discover_slash_commands(working_dir);
     let slash_popover = {
         let iv = input_view.clone();
-        slash_popover::SlashPopover::new(
-            input_frame.upcast_ref(),
-            slash_commands,
-            move |cmd| {
-                let text = format!("/{} ", cmd.name);
-                iv.buffer().set_text(&text);
-                let end = iv.buffer().end_iter();
-                iv.buffer().place_cursor(&end);
-                iv.grab_focus();
-            },
-            {
-                let wd = working_dir.to_path_buf();
-                move || {
-                    let uri = format!("file://{}", wd.join(".claude").join("commands").display());
-                    // Best effort: open the project commands directory
-                    let launcher = gtk::UriLauncher::new(&uri);
-                    launcher.launch(None::<&gtk::Window>, None::<&gtk::gio::Cancellable>, |_| {});
-                }
-            },
-        )
+        slash_popover::SlashPopover::new(input_frame.upcast_ref(), slash_commands, move |cmd| {
+            let text = format!("/{} ", cmd.name);
+            iv.buffer().set_text(&text);
+            let end = iv.buffer().end_iter();
+            iv.buffer().place_cursor(&end);
+            iv.grab_focus();
+        })
     };
+
+    // Wire "Configure…" to open the skills dialog
+    {
+        let sp = Rc::clone(&slash_popover);
+        let wd = working_dir.to_path_buf();
+        let input_frame_ref = input_frame.clone();
+        slash_popover.set_on_configure(move || {
+            let win = input_frame_ref
+                .root()
+                .and_then(|r| r.downcast::<gtk::Window>().ok());
+            if let Some(win) = win.as_ref() {
+                let sp2 = Rc::clone(&sp);
+                let wd2 = wd.clone();
+                crate::skills_dialog::show(win, &wd, move || {
+                    let cmds = crate::services::skills::discover_slash_commands(&wd2);
+                    sp2.reload(cmds);
+                });
+            }
+        });
+    }
 
     // "/" button opens the full slash command list
     {

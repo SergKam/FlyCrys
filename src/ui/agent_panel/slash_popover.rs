@@ -12,7 +12,7 @@ pub(crate) struct SlashPopover {
     all_commands: Rc<RefCell<Vec<SlashCommand>>>,
     filtered: Rc<RefCell<Vec<SlashCommand>>>,
     on_select: Rc<dyn Fn(&SlashCommand)>,
-    on_configure: Rc<dyn Fn()>,
+    on_configure: Rc<RefCell<Box<dyn Fn()>>>,
 }
 
 impl SlashPopover {
@@ -20,7 +20,6 @@ impl SlashPopover {
         anchor: &gtk::Widget,
         commands: Vec<SlashCommand>,
         on_select: impl Fn(&SlashCommand) + 'static,
-        on_configure: impl Fn() + 'static,
     ) -> Rc<Self> {
         let popover = gtk::Popover::new();
         popover.set_parent(anchor);
@@ -63,7 +62,7 @@ impl SlashPopover {
             all_commands: Rc::new(RefCell::new(commands)),
             filtered: Rc::new(RefCell::new(Vec::new())),
             on_select: Rc::new(on_select),
-            on_configure: Rc::new(on_configure),
+            on_configure: Rc::new(RefCell::new(Box::new(|| {}))),
         });
 
         // Wire list_box row activation
@@ -84,11 +83,16 @@ impl SlashPopover {
             let sp2 = Rc::clone(&sp);
             configure_btn.connect_clicked(move |_| {
                 sp2.popover.popdown();
-                (sp2.on_configure)();
+                (sp2.on_configure.borrow())();
             });
         }
 
         sp
+    }
+
+    /// Set the handler for the "Configure…" button (allows post-construction wiring).
+    pub fn set_on_configure(&self, f: impl Fn() + 'static) {
+        *self.on_configure.borrow_mut() = Box::new(f);
     }
 
     /// Update the displayed list, filtering by prefix match on command name.
@@ -105,16 +109,17 @@ impl SlashPopover {
         };
 
         // Add /rescan-skills as a synthetic command if it matches
-        if "rescan-skills".starts_with(&query_lower) || query_lower.is_empty() {
-            // Only add if not already in the truncated list (unlikely)
-            if !results.iter().any(|c| c.name == "rescan-skills") {
-                results.push(SlashCommand {
-                    name: "rescan-skills".to_string(),
-                    description: "Rescan skill directories for new commands".to_string(),
-                    argument_hint: String::new(),
-                    source: crate::models::slash_command::SlashCommandSource::BuiltIn,
-                });
-            }
+        if ("rescan-skills".starts_with(&query_lower) || query_lower.is_empty())
+            && !results.iter().any(|c| c.name == "rescan-skills")
+        {
+            results.push(SlashCommand {
+                name: "rescan-skills".to_string(),
+                description: "Rescan skill directories for new commands".to_string(),
+                argument_hint: String::new(),
+                source: crate::models::slash_command::SlashCommandSource::BuiltIn,
+                kind: crate::models::slash_command::SlashCommandKind::Command,
+                path: None,
+            });
         }
 
         *self.filtered.borrow_mut() = results;
@@ -128,7 +133,6 @@ impl SlashPopover {
         }
     }
 
-    /// Hide the popover.
     pub fn hide(&self) {
         self.popover.popdown();
     }
@@ -148,7 +152,6 @@ impl SlashPopover {
         let next = (current + 1).min(n - 1);
         if let Some(row) = self.list_box.row_at_index(next) {
             self.list_box.select_row(Some(&row));
-            // Scroll the row into view
             row.grab_focus();
         }
     }
@@ -183,7 +186,6 @@ impl SlashPopover {
     // ── internal ─────────────────────────────────────────────────────────────
 
     fn rebuild_rows(&self) {
-        // Remove all existing rows
         while let Some(row) = self.list_box.row_at_index(0) {
             self.list_box.remove(&row);
         }
@@ -194,7 +196,6 @@ impl SlashPopover {
             self.list_box.append(&row);
         }
 
-        // Select first row
         if let Some(first) = self.list_box.row_at_index(0) {
             self.list_box.select_row(Some(&first));
         }
@@ -219,7 +220,6 @@ fn build_command_row(cmd: &SlashCommand) -> gtk::ListBoxRow {
     name_label.add_css_class("monospace");
     hbox.append(&name_label);
 
-    // Spacer
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     hbox.append(&spacer);
