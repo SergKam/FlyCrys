@@ -13,6 +13,7 @@ pub mod git_panel;
 pub mod highlight;
 pub mod markdown;
 pub mod session;
+pub mod skills_dialog;
 pub mod terminal;
 pub mod textview;
 pub mod tree;

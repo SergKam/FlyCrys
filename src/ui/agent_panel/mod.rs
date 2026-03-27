@@ -1,5 +1,6 @@
 mod chat_factory;
 mod event_handler;
+mod slash_popover;
 mod state;
 
 use gtk::gio;
@@ -177,6 +178,10 @@ pub fn create_agent_panel(
     compact_btn.set_tooltip_text(Some("Compact conversation to save tokens"));
     compact_btn.set_has_frame(false);
 
+    let slash_btn = gtk::Button::with_label("/");
+    slash_btn.set_tooltip_text(Some("Slash commands"));
+    slash_btn.set_has_frame(false);
+
     let quick_menu = gio::Menu::new();
     let quick_btn = gtk::MenuButton::new();
     quick_btn.set_icon_name("user-bookmarks-symbolic");
@@ -211,6 +216,7 @@ pub fn create_agent_panel(
     toolbar.append(&pause_btn);
     toolbar.append(&stop_btn);
     toolbar.append(&compact_btn);
+    toolbar.append(&slash_btn);
     toolbar.append(&quick_btn);
     toolbar.append(&agent_btn);
     toolbar.append(&spacer);
@@ -453,14 +459,112 @@ pub fn create_agent_panel(
     let do_send_click = do_send.clone();
     send_btn.connect_clicked(move |_| do_send_click());
 
+    // --- Slash commands popover ---
+    let slash_commands = crate::services::skills::discover_slash_commands(working_dir);
+    let slash_popover = {
+        let iv = input_view.clone();
+        slash_popover::SlashPopover::new(input_frame.upcast_ref(), slash_commands, move |cmd| {
+            let text = format!("/{} ", cmd.name);
+            iv.buffer().set_text(&text);
+            let end = iv.buffer().end_iter();
+            iv.buffer().place_cursor(&end);
+            iv.grab_focus();
+        })
+    };
+
+    // Wire "Configure…" to open the skills dialog
+    {
+        let sp = Rc::clone(&slash_popover);
+        let wd = working_dir.to_path_buf();
+        let input_frame_ref = input_frame.clone();
+        slash_popover.set_on_configure(move || {
+            let win = input_frame_ref
+                .root()
+                .and_then(|r| r.downcast::<gtk::Window>().ok());
+            if let Some(win) = win.as_ref() {
+                let sp2 = Rc::clone(&sp);
+                let wd2 = wd.clone();
+                crate::skills_dialog::show(win, &wd, move || {
+                    let cmds = crate::services::skills::discover_slash_commands(&wd2);
+                    sp2.reload(cmds);
+                });
+            }
+        });
+    }
+
+    // "/" button opens the full slash command list
+    {
+        let sp = Rc::clone(&slash_popover);
+        let iv = input_view.clone();
+        slash_btn.connect_clicked(move |_| {
+            sp.update_filter("");
+            sp.show();
+            iv.grab_focus();
+        });
+    }
+
+    // Monitor text changes to detect "/" prefix
+    {
+        let sp = Rc::clone(&slash_popover);
+        let buf = input_view.buffer();
+        buf.connect_changed(move |buf| {
+            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+            let text = text.as_str();
+            if text.starts_with('/') && !text.contains('\n') {
+                let query = &text[1..];
+                if !query.contains(' ') {
+                    sp.update_filter(query);
+                    sp.show();
+                } else {
+                    sp.hide();
+                }
+            } else {
+                sp.hide();
+            }
+        });
+    }
+
     // Ctrl+Enter to send, Ctrl+V to paste image from clipboard
     let key_ctrl = gtk::EventControllerKey::new();
     let do_send_key = do_send.clone();
     let att_key = Rc::clone(&attachments);
     let bar_key = attach_bar.clone();
     let input_for_key = input_view.clone();
+    let sp_key = Rc::clone(&slash_popover);
+    let wd_for_rescan = working_dir.to_path_buf();
     key_ctrl.connect_key_pressed(move |_, key, _, modifiers| {
         let is_ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+
+        // Slash popover keyboard navigation
+        if sp_key.is_visible() {
+            match key {
+                gtk::gdk::Key::Down => {
+                    sp_key.select_next();
+                    return glib::Propagation::Stop;
+                }
+                gtk::gdk::Key::Up => {
+                    sp_key.select_prev();
+                    return glib::Propagation::Stop;
+                }
+                gtk::gdk::Key::Tab | gtk::gdk::Key::Return if !is_ctrl => {
+                    // Check if selected command is /rescan-skills
+                    let buf = input_for_key.buffer();
+                    sp_key.activate_selected();
+                    let new_text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                    if new_text.trim() == "/rescan-skills" {
+                        let cmds = crate::services::skills::discover_slash_commands(&wd_for_rescan);
+                        sp_key.reload(cmds);
+                        buf.set_text("");
+                    }
+                    return glib::Propagation::Stop;
+                }
+                gtk::gdk::Key::Escape => {
+                    sp_key.hide();
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+        }
 
         if key == gtk::gdk::Key::Return && is_ctrl {
             do_send_key();
