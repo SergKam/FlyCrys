@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -98,7 +99,9 @@ pub fn diff_file(repo_path: &Path, file: &str) -> Option<String> {
     run_git_diff(&wd, &["diff", "--cached", "--", &rel])
 }
 
-/// Check if a file has uncommitted git changes.
+/// Check if a file has uncommitted git changes that produce a diff.
+/// Excludes untracked files (`??`) — they appear in `git status` but have no
+/// diff to display.
 pub fn is_file_modified(file_path: &str, working_dir: &Path) -> bool {
     let rel = Path::new(file_path)
         .strip_prefix(working_dir)
@@ -117,10 +120,53 @@ pub fn is_file_modified(file_path: &str, working_dir: &Path) -> bool {
         .output();
 
     match output {
-        Ok(out) => !out.stdout.is_empty(),
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // Only count tracked changes (M, A, D, R, C) — not untracked (??)
+            text.lines().any(|l| l.len() >= 2 && !l.starts_with("??"))
+        }
         Err(_) => false,
     }
 }
+
+/// Build a map of relative-path → git file status for the whole repo.
+/// Used by the file tree to color-code entries.
+pub fn status_map(working_dir: &Path) -> HashMap<String, GitFileStatus> {
+    let entries = status(working_dir).unwrap_or_default();
+    entries.into_iter().map(|e| (e.path, e.status)).collect()
+}
+
+/// Given a file status map, compute the set of relative directory paths that
+/// contain at least one changed file (recursively up to the repo root).
+pub fn dirty_dirs(file_map: &HashMap<String, GitFileStatus>) -> HashSet<String> {
+    let mut dirs = HashSet::new();
+    for path in file_map.keys() {
+        let p = Path::new(path);
+        let mut parent = p.parent();
+        while let Some(dir) = parent {
+            let dir_str = dir.to_string_lossy().to_string();
+            if dir_str.is_empty() || !dirs.insert(dir_str) {
+                break; // already inserted this dir and all its ancestors
+            }
+            parent = dir.parent();
+        }
+    }
+    dirs
+}
+
+/// Return the CSS class name for a given git status.
+pub fn status_css_class(status: &GitFileStatus) -> &'static str {
+    match status {
+        GitFileStatus::Modified | GitFileStatus::Renamed | GitFileStatus::Copied => "git-modified",
+        GitFileStatus::Added => "git-added",
+        GitFileStatus::Deleted => "git-deleted",
+        GitFileStatus::Untracked => "git-untracked",
+        GitFileStatus::Unknown(_) => "git-modified",
+    }
+}
+
+/// All CSS class names used for git status coloring — for bulk removal.
+pub const GIT_CSS_CLASSES: &[&str] = &["git-modified", "git-added", "git-deleted", "git-untracked"];
 
 fn run_git_diff(wd: &str, args: &[&str]) -> Option<String> {
     let output = Command::new("git")

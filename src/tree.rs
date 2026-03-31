@@ -8,9 +8,21 @@ use std::rc::Rc;
 
 use crate::config::constants::TREE_SEARCH_MAX_RESULTS;
 use crate::file_entry::FileEntry;
+use crate::services::git as git_service;
 
 /// Shared map of directory path → ListStore, so the watcher can refresh stores.
 pub type DirStoreMap = Rc<RefCell<HashMap<PathBuf, gio::ListStore>>>;
+
+/// Shared snapshot of git status for tree coloring.
+/// Files: relative path → status.  Dirs: set of relative dir paths that
+/// contain at least one changed descendant.
+#[derive(Default)]
+pub struct GitTreeStatus {
+    pub files: HashMap<String, git_service::GitFileStatus>,
+    pub dirs: HashSet<String>,
+}
+
+pub type GitTreeStatusRef = Rc<RefCell<GitTreeStatus>>;
 
 struct DirEntry {
     name: String,
@@ -33,13 +45,16 @@ pub struct TreePanel {
     pub search_selection: gtk::SingleSelection,
     pub search_list: gtk::ListView,
     pub search_scroll: gtk::ScrolledWindow,
+    /// Shared git status for tree coloring.
+    pub git_status: GitTreeStatusRef,
 }
 
 /// Build the full left-pane tree panel: toolbar, search bar, file tree, search
 /// results list.  Signal wiring (open-file, collapse, search-changed) stays in
 /// the caller so it can capture workspace-level state.
 pub fn create_tree_panel(root_dir: &Path) -> TreePanel {
-    let (tree_scroll, list_view, selection, dir_stores) = create_file_tree(root_dir);
+    let git_status: GitTreeStatusRef = Rc::new(RefCell::new(GitTreeStatus::default()));
+    let (tree_scroll, list_view, selection, dir_stores) = create_file_tree(root_dir, &git_status);
 
     let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
@@ -134,6 +149,7 @@ pub fn create_tree_panel(root_dir: &Path) -> TreePanel {
         search_selection,
         search_list,
         search_scroll,
+        git_status,
     }
 }
 
@@ -178,6 +194,7 @@ pub fn wire_search_activate(panel: &TreePanel, on_open_file: &Rc<dyn Fn(&str)>) 
 
 fn create_file_tree(
     root_dir: &Path,
+    git_status: &GitTreeStatusRef,
 ) -> (
     gtk::ScrolledWindow,
     gtk::ListView,
@@ -222,7 +239,9 @@ fn create_file_tree(
         list_item.set_child(Some(&expander));
     });
 
-    factory.connect_bind(|_factory, list_item| {
+    let gs = git_status.clone();
+    let wd = root_dir.to_path_buf();
+    factory.connect_bind(move |_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let row = list_item.item().and_downcast::<gtk::TreeListRow>().unwrap();
         let entry = row.item().and_downcast::<FileEntry>().unwrap();
@@ -236,11 +255,36 @@ fn create_file_tree(
         icon.set_from_gicon(&content_type_icon(&entry));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&entry.name());
+
+        // Apply git status color
+        for cls in git_service::GIT_CSS_CLASSES {
+            label.remove_css_class(cls);
+        }
+        let rel = Path::new(&entry.path())
+            .strip_prefix(&wd)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let status_ref = gs.borrow();
+        if let Some(st) = status_ref.files.get(&rel) {
+            label.add_css_class(git_service::status_css_class(st));
+        } else if entry.is_dir() && status_ref.dirs.contains(&rel) {
+            // Directories with changed descendants get a subtle indicator
+            label.add_css_class("git-modified");
+        }
     });
 
     factory.connect_unbind(|_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(expander) = list_item.child().and_downcast::<gtk::TreeExpander>() {
+            // Clean up git status CSS on recycled widgets
+            if let Some(hbox) = expander.child().and_downcast::<gtk::Box>()
+                && let Some(icon) = hbox.first_child()
+                && let Some(label) = icon.next_sibling().and_downcast::<gtk::Label>()
+            {
+                for cls in git_service::GIT_CSS_CLASSES {
+                    label.remove_css_class(cls);
+                }
+            }
             expander.set_list_row(None::<&gtk::TreeListRow>);
         }
     });
@@ -288,6 +332,67 @@ fn build_search_factory() -> gtk::SignalListItemFactory {
     });
 
     factory
+}
+
+/// Refresh the git status snapshot and re-color all currently visible tree items.
+///
+/// Called on a timer (every few seconds) from the workspace.  Updates the shared
+/// [`GitTreeStatus`] then walks the ListView's widget children to apply or
+/// remove CSS classes without triggering a full model rebuild.
+pub fn refresh_git_tree_status(
+    list_view: &gtk::ListView,
+    git_status: &GitTreeStatusRef,
+    working_dir: &Path,
+) {
+    // 1. Rebuild the status snapshot
+    let file_map = git_service::status_map(working_dir);
+    let dir_set = git_service::dirty_dirs(&file_map);
+    {
+        let mut gs = git_status.borrow_mut();
+        gs.files = file_map;
+        gs.dirs = dir_set;
+    }
+
+    // 2. Walk visible ListView children and repaint labels
+    repaint_visible_labels(list_view, git_status, working_dir);
+}
+
+/// Walk the ListView's visible row widgets and apply git-status CSS classes.
+fn repaint_visible_labels(
+    list_view: &gtk::ListView,
+    git_status: &GitTreeStatusRef,
+    working_dir: &Path,
+) {
+    let gs = git_status.borrow();
+    let mut widget = list_view.first_child();
+    while let Some(row_widget) = widget {
+        // Each visible row: GtkListItemWidget → TreeExpander → Box → Image + Label
+        if let Some(expander) = row_widget
+            .first_child()
+            .and_then(|w| w.downcast::<gtk::TreeExpander>().ok())
+            && let Some(tree_row) = expander.list_row()
+            && let Some(entry) = tree_row.item().and_downcast::<FileEntry>()
+            && let Some(hbox) = expander.child().and_downcast::<gtk::Box>()
+            && let Some(icon) = hbox.first_child()
+            && let Some(label) = icon.next_sibling().and_downcast::<gtk::Label>()
+        {
+            // Remove old git classes
+            for cls in git_service::GIT_CSS_CLASSES {
+                label.remove_css_class(cls);
+            }
+            // Apply current status
+            let rel = Path::new(&entry.path())
+                .strip_prefix(working_dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if let Some(st) = gs.files.get(&rel) {
+                label.add_css_class(git_service::status_css_class(st));
+            } else if entry.is_dir() && gs.dirs.contains(&rel) {
+                label.add_css_class("git-modified");
+            }
+        }
+        widget = row_widget.next_sibling();
+    }
 }
 
 // ── Public helpers ───────────────────────────────────────────────────────────
