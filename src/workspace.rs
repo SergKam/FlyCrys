@@ -113,6 +113,23 @@ impl Workspace {
                 rc
             });
 
+        // Git status coloring in the file tree (runs initial + periodic refresh)
+        {
+            let lv = tp.list_view.clone();
+            let gs = tp.git_status.clone();
+            let wd = working_dir.clone();
+            // Initial population
+            tree::refresh_git_tree_status(&lv, &gs, &wd);
+            // Periodic refresh on the same cadence as the git panel
+            glib::timeout_add_local(
+                std::time::Duration::from_secs(crate::config::constants::GIT_REFRESH_INTERVAL_SECS),
+                move || {
+                    tree::refresh_git_tree_status(&lv, &gs, &wd);
+                    glib::ControlFlow::Continue
+                },
+            );
+        }
+
         // Main horizontal split (tree+git | editor+terminal)
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         paned.set_position(config.borrow().tree_pane_width);
@@ -742,22 +759,31 @@ fn create_status_bar(
     }
     bar.append(&branch_label);
 
-    // Watch .git/HEAD for branch changes (instant update via inotify).
+    // Watch .git/ directory for branch changes (instant update via inotify).
+    // We watch the directory, not .git/HEAD directly, because git replaces HEAD
+    // atomically (write HEAD.lock, rename → HEAD) which invalidates a file-level
+    // inotify watch after the first event.
     {
-        let git_head = working_dir.join(".git").join("HEAD");
-        if git_head.exists() {
+        let git_dir = working_dir.join(".git");
+        if git_dir.is_dir() {
             let bl = branch_label.clone();
             let wd = working_dir.to_path_buf();
             let (tx, rx) = std::sync::mpsc::channel();
             let watcher = notify::recommended_watcher(move |res: Result<notify::Event, _>| {
-                if let Ok(ev) = res
-                    && (ev.kind.is_modify() || ev.kind.is_create())
-                {
-                    let _ = tx.send(());
+                if let Ok(ev) = res {
+                    // Filter: only care about HEAD (or HEAD.lock rename → HEAD)
+                    let dominated_head = ev.paths.iter().any(|p| {
+                        p.file_name()
+                            .map(|n| n == "HEAD" || n == "HEAD.lock")
+                            .unwrap_or(false)
+                    });
+                    if dominated_head {
+                        let _ = tx.send(());
+                    }
                 }
             });
             if let Ok(mut w) = watcher {
-                let _ = w.watch(&git_head, notify::RecursiveMode::NonRecursive);
+                let _ = w.watch(&git_dir, notify::RecursiveMode::NonRecursive);
                 // Keep watcher alive by moving into the polling closure.
                 glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
                     let _keep = &w; // prevent drop

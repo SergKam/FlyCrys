@@ -29,7 +29,13 @@ fn light_css() -> &'static str {
     .git-modified { color: #e5a50a; font-weight: bold; }
     .git-added { color: #2ec27e; font-weight: bold; }
     .git-deleted { color: #e01b24; font-weight: bold; }
-    .git-untracked { color: alpha(@window_fg_color, 0.45); }
+    .git-untracked { color: #57e389; font-weight: bold; }
+
+    /* Tree items: color only, no bold (bold reserved for git panel rows) */
+    listview.file-tree .git-modified { font-weight: normal; }
+    listview.file-tree .git-added { font-weight: normal; }
+    listview.file-tree .git-deleted { font-weight: normal; }
+    listview.file-tree .git-untracked { font-weight: normal; }
 
     /* ── Tree toolbar ── */
     .tree-toolbar {
@@ -74,7 +80,13 @@ fn dark_css() -> &'static str {
     .git-modified { color: #e5a50a; font-weight: bold; }
     .git-added { color: #2ec27e; font-weight: bold; }
     .git-deleted { color: #e01b24; font-weight: bold; }
-    .git-untracked { color: alpha(@window_fg_color, 0.45); }
+    .git-untracked { color: #57e389; font-weight: bold; }
+
+    /* Tree items: color only, no bold (bold reserved for git panel rows) */
+    listview.file-tree .git-modified { font-weight: normal; }
+    listview.file-tree .git-added { font-weight: normal; }
+    listview.file-tree .git-deleted { font-weight: normal; }
+    listview.file-tree .git-untracked { font-weight: normal; }
 
     /* ── Tree toolbar ── */
     .tree-toolbar {
