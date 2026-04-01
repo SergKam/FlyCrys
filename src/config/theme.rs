@@ -54,6 +54,13 @@ fn light_css() -> &'static str {
     .statusbar-item { font-size: small; color: #666666; }
     .statusbar separator { background-color: #c0c0c0; min-width: 1px; margin: 2px 0; }
 
+    /* ── Run panel ── */
+    .run-panel-notebook header tabs tab { min-height: 0; padding: 2px 6px; }
+    .run-tab-close { min-width: 16px; min-height: 16px; padding: 0; }
+    .task-running { color: #e5a50a; }
+    .task-done { color: #2ec27e; }
+    .task-failed { color: #e01b24; }
+
     /* Force popover separators visible */
     popover separator { background-color: #c0c0c0; min-height: 1px; margin: 4px 8px; }
     "#
@@ -104,6 +111,13 @@ fn dark_css() -> &'static str {
     }
     .statusbar-item { font-size: small; color: #999999; }
     .statusbar separator { background-color: #555555; min-width: 1px; margin: 2px 0; }
+
+    /* ── Run panel ── */
+    .run-panel-notebook header tabs tab { min-height: 0; padding: 2px 6px; }
+    .run-tab-close { min-width: 16px; min-height: 16px; padding: 0; }
+    .task-running { color: #e5a50a; }
+    .task-done { color: #2ec27e; }
+    .task-failed { color: #e01b24; }
 
     /* Force popover separators visible */
     popover separator { background-color: #555555; min-height: 1px; margin: 4px 8px; }

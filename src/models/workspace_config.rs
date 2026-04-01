@@ -6,6 +6,21 @@ use crate::config::constants::{
 };
 use crate::config::types::PanelMode;
 
+// ── Run Panel tab types ─────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum RunTabType {
+    Shell,
+    BackgroundTask,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RunTabConfig {
+    pub id: String,
+    pub name: String,
+    pub tab_type: RunTabType,
+}
+
 /// Per-workspace configuration — everything needed to restore a single tab
 #[derive(Serialize, Clone, Debug)]
 pub struct WorkspaceConfig {
@@ -19,6 +34,8 @@ pub struct WorkspaceConfig {
     pub agent_1_profile: String,
     pub agent_1_session_id: Option<String>,
     pub panel_mode: PanelMode,
+    pub run_tabs: Vec<RunTabConfig>,
+    pub active_run_tab: usize,
 }
 
 fn default_profile() -> String {
@@ -38,6 +55,12 @@ impl WorkspaceConfig {
             agent_1_profile: default_profile(),
             agent_1_session_id: None,
             panel_mode: PanelMode::default(),
+            run_tabs: vec![RunTabConfig {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "bash(1)".to_string(),
+                tab_type: RunTabType::Shell,
+            }],
+            active_run_tab: 0,
         }
     }
 
@@ -77,6 +100,12 @@ struct WorkspaceConfigRaw {
     #[serde(default)]
     panel_mode: Option<PanelMode>,
 
+    // Run panel tabs (empty → default single bash tab)
+    #[serde(default)]
+    run_tabs: Vec<RunTabConfig>,
+    #[serde(default)]
+    active_run_tab: usize,
+
     // Legacy fields (consumed for migration, never serialized)
     #[serde(default, alias = "preview_mode")]
     view_mode: Option<crate::config::types::ViewMode>,
@@ -108,6 +137,17 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
                 PanelMode::Source
             }
         });
+        // Old configs have no run_tabs — default to one bash(1) tab
+        let run_tabs = if raw.run_tabs.is_empty() {
+            vec![RunTabConfig {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "bash(1)".to_string(),
+                tab_type: RunTabType::Shell,
+            }]
+        } else {
+            raw.run_tabs
+        };
+
         Ok(WorkspaceConfig {
             id: raw.id,
             working_directory: raw.working_directory,
@@ -119,6 +159,8 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
             agent_1_profile: raw.agent_1_profile,
             agent_1_session_id: raw.agent_1_session_id,
             panel_mode,
+            run_tabs,
+            active_run_tab: raw.active_run_tab,
         })
     }
 }

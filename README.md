@@ -92,6 +92,7 @@ Discovers commands from `~/.claude/commands/`, `~/.claude/skills/`, project `.cl
 - Live refresh via inotify watcher (preserves expand state)
 - Right-click: Copy Path, Add to Chat, Open Terminal Here, Open in Default App
 - Drag files onto agent input
+- Git status coloring in the file tree (files and ancestor folders)
 - Git status panel with color-coded changes
 
 ### Text viewer
@@ -102,11 +103,16 @@ Discovers commands from `~/.claude/commands/`, `~/.claude/skills/`, project `.cl
 - Image preview with scaling
 - Git diff with highlighting
 
-### Terminal
+### Run Panel
 
-- Embedded VTE4 terminal with full PTY
-- "Terminal here" opens in the file's directory
-- Scrollback preserved across sessions
+- Tabbed terminal panel — multiple shell tabs per workspace
+- [+] button creates new `bash(N)` tabs; drag-reorder supported
+- Right-click tab header: Rename, Copy All Text, Add Selected to Chat, Close
+- Background task tracking — auto-creates task tabs when Claude runs `run_in_background` commands
+- Task tabs show command, separator, then streamed output from the task file
+- Task status indicators: ⏳ running, ✓ completed, ✗ failed (via Claude's `task_notification` events)
+- Lazy tab loading — VTE terminals only created on first focus
+- Scrollback preserved across sessions per tab
 - Colors adapt to light/dark mode
 
 ### Workspace

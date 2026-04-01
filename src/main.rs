@@ -9,7 +9,6 @@ use flycrys::config::constants::AUTOSAVE_INTERVAL_SECS;
 use flycrys::config::theme::css_for_theme;
 use flycrys::config::types::{NotificationLevel, Theme};
 use flycrys::session::{self, AppConfig, WorkspaceConfig};
-use flycrys::terminal;
 use flycrys::workspace::Workspace;
 
 const APP_ID: &str = "com.flycrys.app";
@@ -145,14 +144,17 @@ impl TabSlot {
     /// Persist this tab's state to disk.
     fn save(&self) {
         if let Some(ref ws) = self.workspace {
+            // Update run panel state into config before saving
+            {
+                let mut cfg = ws.config.borrow_mut();
+                cfg.run_tabs = ws.run_panel.run_tab_configs();
+                cfg.active_run_tab = ws.run_panel.active_run_tab();
+                cfg.terminal_visible = ws.run_panel.is_visible();
+            }
             session::save_workspace_config(&ws.config.borrow());
             session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
-            // Save terminal scrollback only if content changed since last save
-            if ws.terminal_dirty.get() {
-                let term_path = session::terminal_content_path(&ws.config.borrow().id);
-                terminal::save_scrollback(&ws.vte_terminal, &term_path);
-                ws.terminal_dirty.set(false);
-            }
+            // Save dirty terminal tab scrollbacks
+            ws.run_panel.save_dirty_tabs();
         } else if let Some(ref config) = self.pending_config {
             // Never visited — config is unchanged on disk, save for consistency
             session::save_workspace_config(config);

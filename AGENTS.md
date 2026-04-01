@@ -87,7 +87,8 @@ src/
 
   models/                          LAYER 1: Pure data structures
     app_config.rs                  AppConfig (window state, theme, notifications)
-    workspace_config.rs            WorkspaceConfig (pane sizes, view mode, agent sessions)
+    workspace_config.rs            WorkspaceConfig (pane sizes, view mode, agent sessions),
+                                   RunTabConfig, RunTabType (run panel tab persistence)
     agent_config.rs                AgentConfig (name, system prompt, tools, model)
     chat.rs                        ChatMessage enum (user, assistant, tool, system)
 
@@ -110,14 +111,15 @@ src/
 
   session.rs                       Thin re-export layer (models + storage) for convenience
   main.rs                          App entry point, window setup, tab management, settings popover
-  workspace.rs                     Workspace container: paned layout, file tree, editor, terminal, agent
+  workspace.rs                     Workspace container: paned layout, file tree, editor, run panel, agent
+  run_panel.rs                     Tabbed Run Panel: multi-terminal tabs + background task tracking
   agent_widgets.rs                 Chat message widget builders (user, assistant, tool, system)
   agent_config_dialog.rs           Agent profile CRUD dialog
   git_panel.rs                     Git status/diff UI panel (calls services/git.rs)
   textview.rs                      File viewer with source/preview modes
   highlight.rs                     Syntax highlighting via syntect (data-driven extension map)
   markdown.rs                      Markdown to Pango markup converter
-  terminal.rs                      VTE4 terminal wrapper
+  terminal.rs                      VTE4 terminal utilities (colors, spawn, scrollback save/restore)
   tree.rs                          File tree (ListView + TreeListModel)
   file_entry.rs                    GObject subclass for tree model items
   watcher.rs                       File system change watcher
@@ -132,7 +134,7 @@ UI (agent_panel)  <---  AgentDomainEvent  <---  AgentBackend trait  <---  Claude
                                                                           (services/cli/claude.rs)
 ```
 
-- `AgentDomainEvent` is CLI-agnostic: `TextDelta`, `ToolStarted`, `TokenUsage`, `Finished`, etc.
+- `AgentDomainEvent` is CLI-agnostic: `TextDelta`, `ToolStarted`, `TokenUsage`, `TaskNotification`, `Finished`, etc.
 - Claude wire types (`ClaudeEvent`, `StreamEventData`, `ContentBlock`, `Delta`) are **private** to `claude.rs`
 - UI code MUST NOT match on Claude-specific strings (`"content_block_delta"`, `"message_start"`, etc.)
 - The `AgentBackend` trait defines: `spawn`, `send_message`, `pause`, `resume`, `stop`, `is_alive`

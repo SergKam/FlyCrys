@@ -12,6 +12,7 @@ pub mod file_entry;
 pub mod git_panel;
 pub mod highlight;
 pub mod markdown;
+pub mod run_panel;
 pub mod session;
 pub mod skills_dialog;
 pub mod terminal;

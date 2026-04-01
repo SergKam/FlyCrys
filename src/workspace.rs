@@ -1,20 +1,22 @@
 use gtk::gio;
 use gtk::glib;
+use gtk::prelude::*;
 use gtk4 as gtk;
 use notify::Watcher;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use vte4::prelude::*;
 
 use crate::config::constants::{AGENT_PANEL_MIN_WIDTH, TREE_MAX_EXPAND_PASSES};
 use crate::config::types::{NotificationLevel, PanelMode, Theme};
 use crate::file_entry::FileEntry;
+use crate::run_panel::RunPanel;
 use crate::services::platform;
 use crate::session::{self, WorkspaceConfig};
 use crate::ui::agent_panel;
+use crate::ui::agent_panel::state::{BackgroundTaskResultCb, TaskCompletedCb};
 use crate::watcher::FileWatcher;
-use crate::{git_panel, highlight, terminal, textview, tree};
+use crate::{git_panel, highlight, textview, tree};
 
 /// All the widgets for a single workspace tab
 pub struct Workspace {
@@ -22,11 +24,7 @@ pub struct Workspace {
     pub config: Rc<RefCell<WorkspaceConfig>>,
     pub tab_spinner: gtk::Spinner,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
-    pub vte_terminal: vte4::Terminal,
-    /// True while a shell child process is running inside the terminal.
-    pub terminal_has_child: Rc<Cell<bool>>,
-    /// Set by `contents-changed` signal, cleared after save.
-    pub terminal_dirty: Rc<Cell<bool>>,
+    pub run_panel: RunPanel,
     /// Called on theme change to re-highlight the current file.
     pub on_theme_rehighlight: Rc<dyn Fn(bool)>,
     // Prevent drop — stopping the watcher closes the channel and the GTK timer exits.
@@ -52,37 +50,41 @@ impl Workspace {
         // Right pane top: text view with toolbar
         let tv = textview::create_text_view();
 
-        // Right pane bottom: terminal
-        let (terminal_container, vte_terminal) = terminal::create_terminal_panel();
-        terminal::apply_colors(&vte_terminal, theme.get());
-        let terminal_dirty = Rc::new(Cell::new(false));
-        let terminal_has_child = Rc::new(Cell::new(false));
-        setup_terminal(
-            &config,
-            &working_dir,
-            &terminal_container,
-            &vte_terminal,
-            &terminal_has_child,
-            &terminal_dirty,
-        );
+        // Late-binding slot for "Add Selected to Chat" — filled after agent panel creation
+        let agent_input_slot: Rc<RefCell<Option<gtk::TextView>>> = Rc::new(RefCell::new(None));
+        let on_add_to_chat: Rc<dyn Fn(String)> = {
+            let slot = Rc::clone(&agent_input_slot);
+            Rc::new(move |text: String| {
+                if let Some(ref ai) = *slot.borrow() {
+                    let buffer = ai.buffer();
+                    let mut end = buffer.end_iter();
+                    let current = buffer.text(&buffer.start_iter(), &end, false);
+                    let prefix = if current.is_empty()
+                        || current.ends_with(' ')
+                        || current.ends_with('\n')
+                    {
+                        ""
+                    } else {
+                        " "
+                    };
+                    buffer.insert(&mut end, &format!("{prefix}{text}"));
+                }
+            })
+        };
+
+        // Right pane bottom: run panel (multi-terminal tabs)
+        let run_panel = RunPanel::new(&config.borrow(), Rc::clone(&theme), on_add_to_chat);
 
         // Toggle handlers (view mode, diff mode)
         wire_panel_mode_handlers(&tv, &current_file, &theme, &config, &working_dir);
 
         // Toolbar button handlers (open, edit, browser, terminal, copy)
-        wire_toolbar_buttons(
-            &tv,
-            &current_file,
-            &terminal_container,
-            &vte_terminal,
-            &config,
-            &terminal_has_child,
-        );
+        wire_toolbar_buttons(&tv, &current_file, &run_panel, &config);
 
         // Right pane: editor + terminal split
         let right_paned = gtk::Paned::new(gtk::Orientation::Vertical);
         right_paned.set_start_child(Some(&tv.container));
-        right_paned.set_end_child(Some(&terminal_container));
+        right_paned.set_end_child(Some(run_panel.container()));
         right_paned.set_resize_start_child(true);
         right_paned.set_resize_end_child(true);
         right_paned.set_shrink_start_child(false);
@@ -165,6 +167,30 @@ impl Workspace {
             let on_session = Rc::new(move |id: Option<String>| {
                 cfg.borrow_mut().agent_1_session_id = id;
             });
+            // Background task callbacks → run panel
+            let on_bg_task: Option<Rc<dyn Fn(String, String)>> = {
+                let rp = run_panel.clone();
+                Some(Rc::new(move |command: String, tool_id: String| {
+                    rp.add_background_task_tab(&command, &tool_id);
+                }))
+            };
+            let on_bg_result: BackgroundTaskResultCb = {
+                let rp = run_panel.clone();
+                Some(Rc::new(
+                    move |tool_id: String, output: String, is_error: bool| {
+                        rp.update_task_result(&tool_id, &output, is_error);
+                    },
+                ))
+            };
+            let on_task_done: TaskCompletedCb = {
+                let rp = run_panel.clone();
+                Some(Rc::new(
+                    move |tool_id: String, status: String, output_file: Option<String>| {
+                        rp.complete_task(&tool_id, &status, output_file.as_deref());
+                    },
+                ))
+            };
+
             agent_panel::create_agent_panel(
                 Rc::clone(&on_open_file),
                 Rc::clone(&theme),
@@ -179,11 +205,17 @@ impl Workspace {
                 on_session,
                 Rc::clone(&chat_history),
                 on_tool_result,
+                on_bg_task,
+                on_bg_result,
+                on_task_done,
                 token_label.clone(),
                 cost_label.clone(),
                 agent_name_label.clone(),
             )
         };
+
+        // Fill the late-binding slot so "Add Selected to Chat" can reach the agent input
+        *agent_input_slot.borrow_mut() = Some(agent_input_1.clone());
 
         // Wire chat button
         {
@@ -228,10 +260,8 @@ impl Workspace {
             &ctx_path,
             &ctx_is_dir,
             &agent_input_1,
-            &terminal_container,
-            &vte_terminal,
+            &run_panel,
             &config,
-            &terminal_has_child,
             &current_file,
             &tv,
         );
@@ -263,14 +293,14 @@ impl Workspace {
         let on_theme_rehighlight: Rc<dyn Fn(bool)> = {
             let oof = Rc::clone(&on_open_file);
             let cf = Rc::clone(&current_file);
-            let vte = vte_terminal.clone();
+            let rp = run_panel.clone();
             Rc::new(move |dark: bool| {
                 let file = cf.borrow().clone();
                 if !file.is_empty() {
                     oof(&file);
                 }
                 let t = if dark { Theme::Dark } else { Theme::Light };
-                terminal::apply_colors(&vte, t);
+                rp.apply_colors(t);
                 agent_on_theme_change(dark);
             })
         };
@@ -280,46 +310,10 @@ impl Workspace {
             config,
             tab_spinner,
             chat_history,
-            vte_terminal,
-            terminal_has_child,
-            terminal_dirty,
+            run_panel,
             on_theme_rehighlight,
             _file_watcher: file_watcher,
         }
-    }
-}
-
-// ── Terminal setup ───────────────────────────────────────────────────────────
-
-fn setup_terminal(
-    config: &Rc<RefCell<WorkspaceConfig>>,
-    working_dir: &Path,
-    container: &gtk::Box,
-    vte: &vte4::Terminal,
-    has_child: &Rc<Cell<bool>>,
-    dirty: &Rc<Cell<bool>>,
-) {
-    let was_visible = config.borrow().terminal_visible;
-    container.set_visible(was_visible);
-    if was_visible {
-        let vte = vte.clone();
-        let ws_id = config.borrow().id.clone();
-        let wd = working_dir.to_string_lossy().to_string();
-        let hc = Rc::clone(has_child);
-        glib::idle_add_local_once(move || {
-            let term_path = session::terminal_content_path(&ws_id);
-            terminal::restore_scrollback(&vte, &term_path);
-            terminal::spawn_shell(&vte, &wd);
-            hc.set(true);
-        });
-    }
-    {
-        let hc = Rc::clone(has_child);
-        vte.connect_child_exited(move |_, _| hc.set(false));
-    }
-    {
-        let d = Rc::clone(dirty);
-        vte.connect_contents_changed(move |_| d.set(true));
     }
 }
 
@@ -457,10 +451,8 @@ fn wire_panel_mode_handlers(
 fn wire_toolbar_buttons(
     tv: &textview::TextViewPanel,
     current_file: &Rc<RefCell<String>>,
-    terminal_container: &gtk::Box,
-    vte_terminal: &vte4::Terminal,
+    run_panel: &RunPanel,
     config: &Rc<RefCell<WorkspaceConfig>>,
-    terminal_has_child: &Rc<Cell<bool>>,
 ) {
     // Open in default app
     {
@@ -495,10 +487,8 @@ fn wire_toolbar_buttons(
     // Open terminal in file's parent dir
     {
         let cf = Rc::clone(current_file);
-        let tc = terminal_container.clone();
-        let vte = vte_terminal.clone();
+        let rp = run_panel.clone();
         let cfg = Rc::clone(config);
-        let hc = Rc::clone(terminal_has_child);
         tv.terminal_btn.connect_clicked(move |_| {
             let file = cf.borrow().clone();
             if !file.is_empty() {
@@ -506,14 +496,8 @@ fn wire_toolbar_buttons(
                     .parent()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "/".to_string());
-                tc.set_visible(true);
+                rp.show_and_cd(&parent_dir);
                 cfg.borrow_mut().terminal_visible = true;
-                if hc.get() {
-                    terminal::send_cd(&vte, &parent_dir);
-                } else {
-                    terminal::spawn_shell(&vte, &parent_dir);
-                    hc.set(true);
-                }
             }
         });
     }
@@ -822,10 +806,8 @@ fn register_workspace_actions(
     ctx_path: &Rc<RefCell<String>>,
     ctx_is_dir: &Rc<RefCell<bool>>,
     agent_input: &gtk::TextView,
-    terminal_container: &gtk::Box,
-    vte_terminal: &vte4::Terminal,
+    run_panel: &RunPanel,
     config: &Rc<RefCell<WorkspaceConfig>>,
-    terminal_has_child: &Rc<Cell<bool>>,
     current_file: &Rc<RefCell<String>>,
     tv: &textview::TextViewPanel,
 ) {
@@ -838,10 +820,8 @@ fn register_workspace_actions(
         ctx_path,
         ctx_is_dir,
         agent_input,
-        terminal_container,
-        vte_terminal,
+        run_panel,
         config,
-        terminal_has_child,
     );
 
     // Gutter context menu actions
@@ -857,17 +837,14 @@ fn register_workspace_actions(
     root.insert_action_group("ws", Some(&action_group));
 }
 
-#[allow(clippy::too_many_arguments)]
 fn register_tree_actions(
     group: &gio::SimpleActionGroup,
     root: &gtk::Box,
     ctx_path: &Rc<RefCell<String>>,
     ctx_is_dir: &Rc<RefCell<bool>>,
     agent_input: &gtk::TextView,
-    terminal_container: &gtk::Box,
-    vte_terminal: &vte4::Terminal,
+    run_panel: &RunPanel,
     config: &Rc<RefCell<WorkspaceConfig>>,
-    terminal_has_child: &Rc<Cell<bool>>,
 ) {
     // Copy Path
     let action = gio::SimpleAction::new("copy-path", None);
@@ -902,10 +879,8 @@ fn register_tree_actions(
     {
         let cp = Rc::clone(ctx_path);
         let cd = Rc::clone(ctx_is_dir);
-        let tc = terminal_container.clone();
-        let vte = vte_terminal.clone();
+        let rp = run_panel.clone();
         let cfg = Rc::clone(config);
-        let hc = Rc::clone(terminal_has_child);
         action.connect_activate(move |_, _| {
             let path = cp.borrow().clone();
             let is_dir = *cd.borrow();
@@ -920,14 +895,8 @@ fn register_tree_actions(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "/".to_string())
             };
-            tc.set_visible(true);
+            rp.show_and_cd(&dir);
             cfg.borrow_mut().terminal_visible = true;
-            if hc.get() {
-                terminal::send_cd(&vte, &dir);
-            } else {
-                terminal::spawn_shell(&vte, &dir);
-                hc.set(true);
-            }
         });
     }
     group.add_action(&action);

@@ -53,6 +53,13 @@ pub enum AgentDomainEvent {
         num_turns: u32,
         context_window: Option<u64>,
     },
+    /// Background task completed / failed / stopped.
+    TaskNotification {
+        tool_use_id: String,
+        /// "completed", "failed", or "stopped"
+        status: String,
+        output_file: Option<String>,
+    },
     ProcessError(String),
 }
 

@@ -69,6 +69,17 @@ pub fn terminal_content_path(workspace_id: &str) -> PathBuf {
     sessions_dir().join(format!("{workspace_id}_terminal.txt"))
 }
 
+/// Path for a specific run-panel tab's scrollback content.
+pub fn terminal_tab_content_path(workspace_id: &str, tab_id: &str) -> PathBuf {
+    sessions_dir().join(format!("{workspace_id}_terminal_{tab_id}.txt"))
+}
+
+/// Remove the scrollback file for a closed run-panel tab.
+pub fn delete_terminal_tab_content(workspace_id: &str, tab_id: &str) {
+    let path = terminal_tab_content_path(workspace_id, tab_id);
+    let _ = fs::remove_file(path);
+}
+
 // --- Chat history persistence ---
 
 fn chat_history_path(workspace_id: &str) -> PathBuf {

@@ -21,6 +21,15 @@ pub enum ClaudeEvent {
         subtype: Option<String>,
         session_id: Option<String>,
         model: Option<String>,
+        // Task notification fields (present when subtype = "task_notification")
+        #[serde(default)]
+        task_id: Option<String>,
+        #[serde(default)]
+        tool_use_id: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        output_file: Option<String>,
     },
     #[serde(rename = "stream_event")]
     StreamEvent { event: Box<StreamEventData> },
@@ -132,15 +141,32 @@ fn translate_event(
 ) {
     match claude_event {
         ClaudeEvent::System {
-            session_id, model, ..
-        } => {
-            let context_window = model.as_deref().and_then(parse_context_window);
-            let _ = sender.send(AgentDomainEvent::Started {
-                session_id,
-                model: model.unwrap_or_default(),
-                context_window,
-            });
-        }
+            subtype,
+            session_id,
+            model,
+            tool_use_id,
+            status,
+            output_file,
+            ..
+        } => match subtype.as_deref() {
+            Some("task_notification") => {
+                if let (Some(tool_id), Some(st)) = (tool_use_id, status) {
+                    let _ = sender.send(AgentDomainEvent::TaskNotification {
+                        tool_use_id: tool_id,
+                        status: st,
+                        output_file,
+                    });
+                }
+            }
+            _ => {
+                let context_window = model.as_deref().and_then(parse_context_window);
+                let _ = sender.send(AgentDomainEvent::Started {
+                    session_id,
+                    model: model.unwrap_or_default(),
+                    context_window,
+                });
+            }
+        },
 
         ClaudeEvent::StreamEvent { event: ev } => {
             translate_stream_event(&ev, active_block, sender);

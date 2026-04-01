@@ -1,7 +1,7 @@
 mod chat_factory;
 mod event_handler;
 mod slash_popover;
-mod state;
+pub(crate) mod state;
 
 use gtk::gio;
 use gtk::glib;
@@ -20,7 +20,10 @@ use crate::models::chat::ChatMessage;
 use crate::services::cli::claude::ClaudeBackend;
 use crate::services::cli::{AgentBackend, AgentDomainEvent, AgentSpawnConfig, ImageAttachment};
 
-use state::{AgentProcessState, ChatState, PanelConfig, PanelState, TokenState};
+use state::{
+    AgentProcessState, BackgroundTaskResultCb, ChatState, PanelConfig, PanelState, TaskCompletedCb,
+    TokenState,
+};
 
 /// How many history entries to show initially / per "Load previous" click.
 const PAGE_SIZE: usize = 100;
@@ -46,6 +49,9 @@ pub fn create_agent_panel(
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     chat_history: Rc<RefCell<Vec<ChatMessage>>>,
     on_tool_result: Option<Rc<dyn Fn()>>,
+    on_background_task: Option<Rc<dyn Fn(String, String)>>,
+    on_background_task_result: BackgroundTaskResultCb,
+    on_task_completed: TaskCompletedCb,
     // External labels living in the workspace status bar — the panel updates their text.
     token_label: gtk::Label,
     cost_label: gtk::Label,
@@ -266,6 +272,10 @@ pub fn create_agent_panel(
         on_session_id_change,
         on_profile_change,
         on_tool_result,
+        on_background_task,
+        on_background_task_result,
+        on_task_completed,
+        pending_background_tasks: std::collections::HashSet::new(),
     }));
 
     // Show "Load previous" link if there are older entries

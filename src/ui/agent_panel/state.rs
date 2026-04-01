@@ -9,6 +9,9 @@ use crate::models::agent_config::AgentConfig;
 use crate::models::chat::ChatMessage;
 use crate::services::cli::claude::ClaudeBackend;
 
+pub(crate) type BackgroundTaskResultCb = Option<Rc<dyn Fn(String, String, bool)>>;
+pub(crate) type TaskCompletedCb = Option<Rc<dyn Fn(String, String, Option<String>)>>;
+
 /// Process-related state.
 pub(crate) struct AgentProcessState {
     pub process: ClaudeBackend,
@@ -65,4 +68,15 @@ pub(crate) struct PanelState {
     pub on_session_id_change: Rc<dyn Fn(Option<String>)>,
     pub on_profile_change: Rc<dyn Fn(&str)>,
     pub on_tool_result: Option<Rc<dyn Fn()>>,
+    /// Called when a background Bash task is detected (`run_in_background: true`).
+    /// Args: (command, tool_use_id).
+    pub on_background_task: Option<Rc<dyn Fn(String, String)>>,
+    /// Called when a background task's ToolResult arrives (immediate boilerplate).
+    /// Args: (tool_use_id, output, is_error).
+    pub on_background_task_result: BackgroundTaskResultCb,
+    /// Called when a task_notification event signals task completion.
+    /// Args: (tool_use_id, status, output_file).
+    pub on_task_completed: TaskCompletedCb,
+    /// Tool IDs that are known background tasks (for result routing).
+    pub pending_background_tasks: std::collections::HashSet<String>,
 }

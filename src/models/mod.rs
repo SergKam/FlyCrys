@@ -10,4 +10,4 @@ pub use app_config::AppConfig;
 pub use bookmark::Bookmark;
 pub use chat::ChatMessage;
 pub use slash_command::{SlashCommand, SlashCommandSource};
-pub use workspace_config::WorkspaceConfig;
+pub use workspace_config::{RunTabConfig, RunTabType, WorkspaceConfig};

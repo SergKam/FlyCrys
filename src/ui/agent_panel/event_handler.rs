@@ -95,6 +95,26 @@ pub(crate) fn handle_domain_event(
             input_json,
         } => {
             let mut s = state.borrow_mut();
+
+            // Detect background Bash tasks
+            if name == "Bash"
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&input_json)
+                && val
+                    .get("run_in_background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                let command = val
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("background task")
+                    .to_string();
+                s.pending_background_tasks.insert(id.clone());
+                if let Some(ref cb) = s.on_background_task {
+                    cb(command, id.clone());
+                }
+            }
+
             let file_path = extract_file_path(&input_json);
             // When a file path link is shown, skip the hint to avoid duplication.
             let input_text = if file_path.is_some() {
@@ -125,6 +145,14 @@ pub(crate) fn handle_domain_event(
             is_error,
         } => {
             let mut s = state.borrow_mut();
+
+            // Route background task results to the run panel
+            if s.pending_background_tasks.remove(&id)
+                && let Some(ref cb) = s.on_background_task_result
+            {
+                cb(id.clone(), output.clone(), is_error);
+            }
+
             if let Some((tool_name, tool_input)) = s.chat.pending_tools.remove(&id) {
                 s.chat.webview.tool_complete(&id, is_error);
 
@@ -279,6 +307,17 @@ pub(crate) fn handle_domain_event(
             }
 
             s.chat.webview.scroll_to_bottom();
+        }
+
+        AgentDomainEvent::TaskNotification {
+            tool_use_id,
+            status,
+            output_file,
+        } => {
+            let s = state.borrow();
+            if let Some(ref cb) = s.on_task_completed {
+                cb(tool_use_id, status, output_file);
+            }
         }
 
         AgentDomainEvent::ProcessError(msg) => {
