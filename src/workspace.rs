@@ -16,7 +16,7 @@ use crate::session::{self, WorkspaceConfig};
 use crate::ui::agent_panel;
 use crate::ui::agent_panel::state::{BackgroundTaskResultCb, TaskCompletedCb};
 use crate::watcher::FileWatcher;
-use crate::{git_panel, highlight, textview, tree};
+use crate::{find_bar, git_panel, highlight, textview, tree};
 
 /// All the widgets for a single workspace tab
 pub struct Workspace {
@@ -80,6 +80,9 @@ impl Workspace {
 
         // Toolbar button handlers (open, edit, browser, terminal, copy)
         wire_toolbar_buttons(&tv, &current_file, &run_panel, &config);
+
+        // In-view find bar (source/diff/preview) — Ctrl+F, highlight, scroll-to-match
+        find_bar::wire(&tv);
 
         // Right pane: editor + terminal split
         let right_paned = gtk::Paned::new(gtk::Orientation::Vertical);

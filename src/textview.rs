@@ -3,6 +3,7 @@ use gtk4 as gtk;
 use std::path::Path;
 
 use crate::config::constants::{GUTTER_CHAR_WIDTH_PX, GUTTER_PADDING_PX, MAX_FILE_SIZE_BYTES};
+use crate::find_bar::{self, FindBar};
 use crate::highlight;
 use crate::markdown;
 
@@ -17,11 +18,13 @@ pub struct TextViewPanel {
     pub terminal_btn: gtk::Button,
     pub copy_btn: gtk::Button,
     pub chat_btn: gtk::Button,
+    pub search_btn: gtk::Button,
     pub source_btn: gtk::ToggleButton,
     pub preview_btn: gtk::ToggleButton,
     pub diff_btn: gtk::ToggleButton,
     pub source_hbox: gtk::Box,
     pub preview_scroll: gtk::ScrolledWindow,
+    pub find_bar: FindBar,
 }
 
 pub enum PreviewKind {
@@ -95,6 +98,10 @@ pub fn create_text_view() -> TextViewPanel {
     chat_btn.set_has_frame(false);
     chat_btn.set_sensitive(false);
 
+    let search_btn = gtk::Button::from_icon_name("edit-find-symbolic");
+    search_btn.set_tooltip_text(Some("Find in view (Ctrl+F)"));
+    search_btn.set_has_frame(false);
+
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
 
@@ -122,8 +129,13 @@ pub fn create_text_view() -> TextViewPanel {
     toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     toolbar.append(&copy_btn);
     toolbar.append(&chat_btn);
+    toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    toolbar.append(&search_btn);
     toolbar.append(&spacer);
     toolbar.append(&mode_box);
+
+    // Find bar (hidden until Ctrl+F / the magnifier button reveals it).
+    let find_bar = find_bar::create_find_bar();
 
     // Line number gutter
     let gutter = gtk::TextView::new();
@@ -194,6 +206,7 @@ pub fn create_text_view() -> TextViewPanel {
 
     vbox.append(&path_label);
     vbox.append(&toolbar);
+    vbox.append(&find_bar.container);
     vbox.append(&source_hbox);
     vbox.append(&preview_scroll);
 
@@ -208,11 +221,13 @@ pub fn create_text_view() -> TextViewPanel {
         terminal_btn,
         copy_btn,
         chat_btn,
+        search_btn,
         source_btn,
         preview_btn,
         diff_btn,
         source_hbox,
         preview_scroll,
+        find_bar,
     }
 }
 
