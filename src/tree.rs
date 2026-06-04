@@ -10,6 +10,10 @@ use crate::config::constants::TREE_SEARCH_MAX_RESULTS;
 use crate::file_entry::FileEntry;
 use crate::services::git as git_service;
 
+/// Key under which each search-result row stashes its file path, so a click or
+/// right-click can map a pointer coordinate back to the file.
+const SEARCH_PATH_KEY: &str = "flycrys-search-path";
+
 /// Shared map of directory path → ListStore, so the watcher can refresh stores.
 pub type DirStoreMap = Rc<RefCell<HashMap<PathBuf, gio::ListStore>>>;
 
@@ -177,17 +181,31 @@ pub fn wire_search(panel: &TreePanel, working_dir: &Path) {
     });
 }
 
-/// Wire click-to-open on search results.
+/// Wire keyboard activation (Enter) to open the highlighted search result.
+/// Opening keeps the search open so the results can keep being browsed.
 pub fn wire_search_activate(panel: &TreePanel, on_open_file: &Rc<dyn Fn(&str)>) {
     let oof = Rc::clone(on_open_file);
-    let sb = panel.search_btn.clone();
     let sel = panel.search_selection.clone();
     panel.search_list.connect_activate(move |_list, pos| {
         if let Some(entry) = sel.item(pos).and_downcast::<FileEntry>() {
             oof(&entry.path());
-            sb.set_active(false);
         }
     });
+}
+
+/// Return the file path of the search-result row under the given list-relative
+/// coordinates, if any. Used by the click and context-menu handlers.
+pub fn search_path_at(search_list: &gtk::ListView, x: f64, y: f64) -> Option<String> {
+    let mut current = search_list.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(w) = current {
+        // SAFETY: the value was stored as a `String` under the same key in the
+        // search factory's `bind`, and `w` is alive for the duration of this call.
+        if let Some(ptr) = unsafe { w.data::<String>(SEARCH_PATH_KEY) } {
+            return Some(unsafe { ptr.as_ref().clone() });
+        }
+        current = w.parent();
+    }
+    None
 }
 
 // ── File tree construction (internal) ────────────────────────────────────────
@@ -327,8 +345,12 @@ fn build_search_factory() -> gtk::SignalListItemFactory {
         let icon = hbox.first_child().and_downcast::<gtk::Image>().unwrap();
         icon.set_from_gicon(&content_type_icon(&entry));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
+        let path = entry.path();
         label.set_text(&entry.name());
-        label.set_tooltip_text(Some(&entry.path()));
+        label.set_tooltip_text(Some(&path));
+        // Stash the path so click/right-click can map a coordinate → file.
+        // SAFETY: a plain owned `String`; overwritten on each rebind.
+        unsafe { hbox.set_data(SEARCH_PATH_KEY, path) };
     });
 
     factory

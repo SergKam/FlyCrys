@@ -141,7 +141,9 @@ impl Workspace {
         // Wire search result activation and tree click handlers
         tree::wire_search_activate(&tp, &on_open_file);
         wire_tree_click(&tp.list_view, &on_open_file);
+        wire_search_click(&tp.search_list, &on_open_file);
         let (ctx_path, ctx_is_dir) = wire_tree_context_menu(&tp.list_view);
+        wire_search_context_menu(&tp, &ctx_path, &ctx_is_dir);
 
         // Agent setup
         let agent_configs = session::list_agent_configs();
@@ -264,6 +266,7 @@ impl Workspace {
             &config,
             &current_file,
             &tv,
+            &tp,
         );
 
         // Drag & drop
@@ -703,6 +706,77 @@ fn wire_tree_context_menu(list_view: &gtk::ListView) -> (Rc<RefCell<String>>, Rc
     (ctx_path, ctx_is_dir)
 }
 
+// ── Search-results click & context menu ──────────────────────────────────────
+
+/// Single left-click on a search result opens the file. The search stays open
+/// so the results list can keep being browsed.
+fn wire_search_click(search_list: &gtk::ListView, on_open_file: &Rc<dyn Fn(&str)>) {
+    let click = gtk::GestureClick::new();
+    click.set_button(1);
+    let oof = Rc::clone(on_open_file);
+    click.connect_pressed(glib::clone!(
+        #[weak]
+        search_list,
+        #[strong]
+        oof,
+        move |_gesture, n_press, x, y| {
+            if n_press != 1 {
+                return;
+            }
+            if let Some(path) = tree::search_path_at(&search_list, x, y) {
+                oof(&path);
+            }
+        }
+    ));
+    search_list.add_controller(click);
+}
+
+/// Right-click a search result to get the same menu as the tree, prefixed with
+/// "Show in Tree". Shares the tree's `ctx_path` / `ctx_is_dir` cells and the
+/// "ws" action group. Search hits are always files, so `ctx_is_dir` is `false`.
+fn wire_search_context_menu(
+    panel: &tree::TreePanel,
+    ctx_path: &Rc<RefCell<String>>,
+    ctx_is_dir: &Rc<RefCell<bool>>,
+) {
+    let menu = gio::Menu::new();
+    menu.append(Some("Show in Tree"), Some("ws.show-in-tree"));
+    menu.append(Some("Copy Path"), Some("ws.copy-path"));
+    menu.append(Some("Add to Chat"), Some("ws.add-to-chat"));
+    menu.append(Some("Open Terminal Here"), Some("ws.open-terminal-here"));
+    menu.append(Some("Open in Default App"), Some("ws.open-default"));
+    menu.append(Some("Edit in Text Editor"), Some("ws.edit-in-editor"));
+    menu.append(Some("Open in Browser"), Some("ws.open-in-browser"));
+
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_parent(&panel.search_list);
+    popover.set_has_arrow(false);
+
+    let cp = Rc::clone(ctx_path);
+    let cd = Rc::clone(ctx_is_dir);
+    let right_click = gtk::GestureClick::new();
+    right_click.set_button(3);
+    right_click.connect_pressed(glib::clone!(
+        #[weak(rename_to = search_list)]
+        panel.search_list,
+        #[weak]
+        popover,
+        #[strong]
+        cp,
+        #[strong]
+        cd,
+        move |_gesture, _n_press, x, y| {
+            if let Some(path) = tree::search_path_at(&search_list, x, y) {
+                *cp.borrow_mut() = path;
+                *cd.borrow_mut() = false;
+                popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                popover.popup();
+            }
+        }
+    ));
+    panel.search_list.add_controller(right_click);
+}
+
 // ── Status bar ───────────────────────────────────────────────────────────────
 
 fn create_status_labels() -> (gtk::Label, gtk::Label, gtk::Label) {
@@ -810,6 +884,7 @@ fn register_workspace_actions(
     config: &Rc<RefCell<WorkspaceConfig>>,
     current_file: &Rc<RefCell<String>>,
     tv: &textview::TextViewPanel,
+    tp: &tree::TreePanel,
 ) {
     let action_group = gio::SimpleActionGroup::new();
 
@@ -823,6 +898,9 @@ fn register_workspace_actions(
         run_panel,
         config,
     );
+
+    // "Show in Tree" action (shared by the search-results context menu)
+    register_show_in_tree_action(&action_group, tp, ctx_path);
 
     // Gutter context menu actions
     let gutter_ctx_line = wire_gutter_context_menu(&tv.gutter);
@@ -938,6 +1016,30 @@ fn register_tree_actions(
             }
         });
     }
+    group.add_action(&action);
+}
+
+/// Register the "Show in Tree" action: reset the file search, then expand,
+/// select, and scroll the target file into view in the tree.
+fn register_show_in_tree_action(
+    group: &gio::SimpleActionGroup,
+    tp: &tree::TreePanel,
+    ctx_path: &Rc<RefCell<String>>,
+) {
+    let action = gio::SimpleAction::new("show-in-tree", None);
+    let search_btn = tp.search_btn.clone();
+    let selection = tp.selection.clone();
+    let list_view = tp.list_view.clone();
+    let cp = Rc::clone(ctx_path);
+    action.connect_activate(move |_, _| {
+        let path = cp.borrow().clone();
+        if path.is_empty() {
+            return;
+        }
+        // Turning the search off restores the tree (clears entry & results).
+        search_btn.set_active(false);
+        reveal_in_tree(&selection, &list_view, &path);
+    });
     group.add_action(&action);
 }
 
@@ -1185,7 +1287,9 @@ fn append_path_to_input(input: &gtk::TextView, path: &str) {
     buffer.insert(&mut end, &format!("{prefix}{path}"));
 }
 
-fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
+/// Expand folders as needed and select `target_path` in the tree.
+/// Returns the selected row's flattened index, if the file was found.
+fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) -> Option<u32> {
     for _pass in 0..TREE_MAX_EXPAND_PASSES {
         let n = selection.n_items();
         let mut expanded_any = false;
@@ -1202,7 +1306,7 @@ fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
 
             if entry.path() == target_path {
                 selection.set_selected(i);
-                return;
+                return Some(i);
             }
 
             let entry_path = entry.path();
@@ -1220,4 +1324,17 @@ fn select_file_in_tree(selection: &gtk::SingleSelection, target_path: &str) {
             break;
         }
     }
+    None
+}
+
+/// Reveal a file in the tree: expand, select, and scroll it into view.
+fn reveal_in_tree(selection: &gtk::SingleSelection, list_view: &gtk::ListView, target_path: &str) {
+    let Some(index) = select_file_in_tree(selection, target_path) else {
+        return;
+    };
+    // Defer the scroll so freshly-expanded rows have been laid out first.
+    let lv = list_view.clone();
+    glib::idle_add_local_once(move || {
+        lv.scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
+    });
 }
