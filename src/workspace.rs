@@ -142,9 +142,8 @@ impl Workspace {
         paned.set_end_child(Some(&right_paned));
 
         // Wire search result activation and tree click handlers
-        tree::wire_search_activate(&tp, &on_open_file);
         wire_tree_click(&tp.list_view, &on_open_file);
-        wire_search_click(&tp.search_list, &on_open_file);
+        wire_search_click(&tp, &on_open_file);
         let (ctx_path, ctx_is_dir) = wire_tree_context_menu(&tp.list_view);
         wire_search_context_menu(&tp, &ctx_path, &ctx_is_dir);
 
@@ -711,15 +710,23 @@ fn wire_tree_context_menu(list_view: &gtk::ListView) -> (Rc<RefCell<String>>, Rc
 
 // ── Search-results click & context menu ──────────────────────────────────────
 
-/// Single left-click on a search result opens the file. The search stays open
-/// so the results list can keep being browsed.
-fn wire_search_click(search_list: &gtk::ListView, on_open_file: &Rc<dyn Fn(&str)>) {
+/// Mouse / keyboard interactions on search results:
+///   * single click → open the file (the search stays open for browsing),
+///   * double click or Enter → reveal it in the tree (reset search, select, scroll).
+///
+/// Reveal is bound to the ListView's `activate` signal rather than a custom
+/// `GestureClick` `n_press == 2`. The ListView claims the double-click for its
+/// own activation, which cancels a custom click gesture and resets its press
+/// counter — so `n_press == 2` only fired on a *third* click. `activate` is the
+/// ListView's reliable double-click / Enter detector.
+fn wire_search_click(panel: &tree::TreePanel, on_open_file: &Rc<dyn Fn(&str)>) {
+    // Single click → open the file.
     let click = gtk::GestureClick::new();
     click.set_button(1);
     let oof = Rc::clone(on_open_file);
     click.connect_pressed(glib::clone!(
-        #[weak]
-        search_list,
+        #[weak(rename_to = search_list)]
+        panel.search_list,
         #[strong]
         oof,
         move |_gesture, n_press, x, y| {
@@ -731,7 +738,23 @@ fn wire_search_click(search_list: &gtk::ListView, on_open_file: &Rc<dyn Fn(&str)
             }
         }
     ));
-    search_list.add_controller(click);
+    panel.search_list.add_controller(click);
+
+    // Double click / Enter → reveal the file in the tree.
+    {
+        let search_selection = panel.search_selection.clone();
+        let search_btn = panel.search_btn.clone();
+        let selection = panel.selection.clone();
+        let list_view = panel.list_view.clone();
+        panel.search_list.connect_activate(move |_lv, pos| {
+            if let Some(entry) = search_selection.item(pos).and_downcast::<FileEntry>() {
+                let path = entry.path();
+                // Turning the search off restores the tree (clears entry & results).
+                search_btn.set_active(false);
+                reveal_in_tree(&selection, &list_view, &path);
+            }
+        });
+    }
 }
 
 /// Right-click a search result to get the same menu as the tree, prefixed with

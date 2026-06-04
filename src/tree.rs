@@ -181,18 +181,6 @@ pub fn wire_search(panel: &TreePanel, working_dir: &Path) {
     });
 }
 
-/// Wire keyboard activation (Enter) to open the highlighted search result.
-/// Opening keeps the search open so the results can keep being browsed.
-pub fn wire_search_activate(panel: &TreePanel, on_open_file: &Rc<dyn Fn(&str)>) {
-    let oof = Rc::clone(on_open_file);
-    let sel = panel.search_selection.clone();
-    panel.search_list.connect_activate(move |_list, pos| {
-        if let Some(entry) = sel.item(pos).and_downcast::<FileEntry>() {
-            oof(&entry.path());
-        }
-    });
-}
-
 /// Return the file path of the search-result row under the given list-relative
 /// coordinates, if any. Used by the click and context-menu handlers.
 pub fn search_path_at(search_list: &gtk::ListView, x: f64, y: f64) -> Option<String> {
