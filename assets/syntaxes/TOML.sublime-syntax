@@ -1,0 +1,132 @@
+%YAML 1.2
+---
+# Minimal TOML grammar for syntect (https://toml.io).
+# syntect's default set ships no TOML grammar, so we bundle this one.
+name: TOML
+file_extensions:
+  - toml
+  - tml
+scope: source.toml
+
+contexts:
+  main:
+    - include: comments
+    - include: tables
+    - include: keys
+    - include: values
+
+  comments:
+    - match: '#'
+      scope: punctuation.definition.comment.toml
+      push:
+        - meta_scope: comment.line.number-sign.toml
+        - match: $\n?
+          pop: true
+
+  tables:
+    - match: '(\[\[)'
+      scope: punctuation.definition.table.array.toml
+      push:
+        - meta_scope: meta.table.array.toml entity.name.table.toml
+        - match: '(\]\])'
+          scope: punctuation.definition.table.array.toml
+          pop: true
+        - include: dotted-name
+    - match: '(\[)'
+      scope: punctuation.definition.table.toml
+      push:
+        - meta_scope: meta.table.toml entity.name.table.toml
+        - match: '(\])'
+          scope: punctuation.definition.table.toml
+          pop: true
+        - include: dotted-name
+
+  dotted-name:
+    - match: '[A-Za-z0-9_-]+'
+      scope: entity.name.table.toml
+    - match: '"'
+      push: double-string
+    - match: "'"
+      push: single-string
+    - match: '\.'
+      scope: punctuation.separator.dot.toml
+
+  keys:
+    - match: '(?=[A-Za-z0-9_.''"-]+\s*=)'
+      push:
+        - meta_scope: meta.key.toml
+        - match: '[A-Za-z0-9_-]+'
+          scope: variable.other.key.toml
+        - match: '"'
+          push: double-string
+        - match: "'"
+          push: single-string
+        - match: '\.'
+          scope: punctuation.separator.dot.toml
+        - match: '='
+          scope: punctuation.separator.key-value.toml
+          pop: true
+
+  values:
+    - include: strings
+    - include: booleans
+    - include: dates
+    - include: numbers
+
+  strings:
+    - match: '"""'
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.triple.double.toml
+        - match: '"""'
+          scope: punctuation.definition.string.end.toml
+          pop: true
+        - include: escapes
+    - match: "'''"
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.triple.single.toml
+        - match: "'''"
+          scope: punctuation.definition.string.end.toml
+          pop: true
+    - match: '"'
+      push: double-string
+    - match: "'"
+      push: single-string
+
+  double-string:
+    - meta_scope: string.quoted.double.toml
+    - match: '"'
+      pop: true
+    - match: $\n?
+      pop: true
+    - include: escapes
+
+  single-string:
+    - meta_scope: string.quoted.single.toml
+    - match: "'"
+      pop: true
+    - match: $\n?
+      pop: true
+
+  escapes:
+    - match: '\\([btnfr"\\]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})'
+      scope: constant.character.escape.toml
+
+  booleans:
+    - match: '\b(true|false)\b'
+      scope: constant.language.boolean.toml
+
+  dates:
+    - match: '\d{4}-\d{2}-\d{2}([Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})?)?'
+      scope: constant.other.datetime.toml
+    - match: '\d{2}:\d{2}:\d{2}(\.\d+)?'
+      scope: constant.other.time.toml
+
+  numbers:
+    - match: '[+-]?(0x[0-9A-Fa-f](_?[0-9A-Fa-f])*|0o[0-7](_?[0-7])*|0b[01](_?[01])*)'
+      scope: constant.numeric.integer.toml
+    - match: '[+-]?\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?'
+      scope: constant.numeric.float.toml
+    - match: '[+-]?(inf|nan)\b'
+      scope: constant.numeric.toml

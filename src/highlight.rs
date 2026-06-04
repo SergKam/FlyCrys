@@ -29,7 +29,7 @@ pub fn highlight_buffer_with_theme(
         CUSTOM_SYNTAX_SET.with(|custom_ss| {
             THEME_SET.with(|ts| {
                 let theme = &ts.themes[theme_name];
-                let ext = file_path.rsplit('.').next().unwrap_or("");
+                let ext = syntax_key(file_path);
 
                 let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
                 let mut h = syntect::easy::HighlightLines::new(syntax, theme);
@@ -95,7 +95,7 @@ pub fn diff_to_pango(old_string: &str, new_string: &str, file_path: &str) -> Str
         CUSTOM_SYNTAX_SET.with(|custom_ss| {
             THEME_SET.with(|ts| {
                 let theme = &ts.themes[LIGHT_THEME];
-                let ext = file_path.rsplit('.').next().unwrap_or("");
+                let ext = syntax_key(file_path);
                 let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
 
                 let mut out = String::new();
@@ -181,7 +181,7 @@ pub fn diff_to_html(old_string: &str, new_string: &str, file_path: &str) -> Stri
         CUSTOM_SYNTAX_SET.with(|custom_ss| {
             THEME_SET.with(|ts| {
                 let theme = &ts.themes[LIGHT_THEME];
-                let ext = file_path.rsplit('.').next().unwrap_or("");
+                let ext = syntax_key(file_path);
                 let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
 
                 let mut out = String::new();
@@ -248,6 +248,20 @@ pub fn diff_to_html(old_string: &str, new_string: &str, file_path: &str) -> Stri
     })
 }
 
+/// The syntect lookup key for a path: the file extension, or — for
+/// extensionless files like `Makefile`/`Dockerfile` — the bare file name.
+///
+/// The file name is isolated first so directory dots (e.g. `/home/u.x/Makefile`)
+/// can't corrupt the result, and a leading-dot name (`.bashrc`) is treated as a
+/// whole name rather than an extension.
+fn syntax_key(file_path: &str) -> &str {
+    let name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => ext,
+        _ => name,
+    }
+}
+
 /// Resolve an extension to a (SyntaxSet, SyntaxReference) pair.
 ///
 /// Checks the default built-in set first, then the custom set (TypeScript, etc.),
@@ -297,7 +311,7 @@ fn escape_pango(s: &str) -> String {
 /// Binary files and oversized files never reach this check — they are rejected
 /// earlier in `textview::load_file` (non-UTF-8 read failure and the 10 MB cap).
 pub fn is_highlightable(file_path: &str) -> bool {
-    let ext = file_path.rsplit('.').next().unwrap_or("");
+    let ext = syntax_key(file_path);
     if ext.is_empty() {
         return false;
     }
@@ -379,5 +393,42 @@ mod tests {
         assert!(!should_highlight("main.rs", HIGHLIGHT_MAX_BYTES + 1));
         // No grammar: never highlighted, regardless of size.
         assert!(!should_highlight("notes.txt", 10));
+    }
+
+    /// The grammars we bundle (because syntect ships none) must resolve.
+    #[test]
+    fn bundled_toml_and_dockerfile_resolve() {
+        let default_ss = SyntaxSet::load_defaults_newlines();
+        static BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/custom_syntaxes.packdump"));
+        let custom_ss: SyntaxSet =
+            syntect::dumps::from_uncompressed_data(BYTES).expect("bad custom syntax packdump");
+        assert_eq!(
+            resolve_syntax(&default_ss, &custom_ss, "toml").1.name,
+            "TOML"
+        );
+        assert_eq!(
+            resolve_syntax(&default_ss, &custom_ss, "Dockerfile").1.name,
+            "Dockerfile"
+        );
+    }
+
+    /// `syntax_key` isolates the file name, so extensionless files resolve even
+    /// at real paths containing directory dots.
+    #[test]
+    fn syntax_key_isolates_filename() {
+        assert_eq!(syntax_key("/home/u/main.rs"), "rs");
+        assert_eq!(syntax_key("archive.tar.gz"), "gz");
+        assert_eq!(syntax_key("/home/u.x/Makefile"), "Makefile");
+        assert_eq!(syntax_key("Dockerfile"), "Dockerfile");
+        assert_eq!(syntax_key(".bashrc"), ".bashrc");
+    }
+
+    /// Real-world paths to grammar-backed files — including the bundled TOML and
+    /// extensionless Dockerfile/Makefile at dotted directories — are highlightable.
+    #[test]
+    fn full_paths_are_highlightable() {
+        assert!(is_highlightable("/home/sergii/work/flycrys/Cargo.toml"));
+        assert!(is_highlightable("/home/sergii/work/flycrys/Dockerfile"));
+        assert!(is_highlightable("/home/u.dotted/project/Makefile"));
     }
 }

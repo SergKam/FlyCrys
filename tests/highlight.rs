@@ -205,6 +205,35 @@ fn diff_multiline_rust_preserves_syntax_colors() {
     assert!(out.matches("#e6ffed").count() == 3, "3 added lines");
 }
 
+/// Distinct foreground colors emitted by `diff_to_html`, excluding the fixed
+/// red/green diff-marker colors so only content tokenization is counted.
+fn content_colors(out: &str) -> std::collections::HashSet<String> {
+    let markers = ["b31d28", "22863a"]; // del "- " / add "+ " marker colors
+    out.match_indices("color:#")
+        .filter_map(|(i, _)| out.get(i + 7..i + 13))
+        .filter(|c| !markers.contains(c))
+        .map(|c| c.to_string())
+        .collect()
+}
+
+#[test]
+fn toml_grammar_tokenizes() {
+    // Bundled TOML grammar: comment + string + number must produce >1 color,
+    // which also exercises the grammar's regexes at runtime (no panic).
+    let snippet = "# a comment\nname = \"flycrys\"\nport = 8080";
+    let out = highlight::diff_to_html(snippet, snippet, "Cargo.toml");
+    let colors = content_colors(&out);
+    assert!(colors.len() > 1, "TOML should tokenize: {colors:?}");
+}
+
+#[test]
+fn dockerfile_grammar_tokenizes() {
+    let snippet = "# comment\nFROM rust:1.96 AS build\nRUN cargo build";
+    let out = highlight::diff_to_html(snippet, snippet, "Dockerfile");
+    let colors = content_colors(&out);
+    assert!(colors.len() > 1, "Dockerfile should tokenize: {colors:?}");
+}
+
 #[test]
 fn highlightable_alias_extensions() {
     // mjs/cjs/jsx/tsx/yml/mdx should all be highlightable

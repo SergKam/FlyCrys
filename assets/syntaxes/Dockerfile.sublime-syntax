@@ -1,0 +1,57 @@
+%YAML 1.2
+---
+# Minimal Dockerfile grammar for syntect.
+# syntect's default set ships no Dockerfile grammar, so we bundle this one.
+name: Dockerfile
+file_extensions:
+  - Dockerfile
+  - dockerfile
+  - Containerfile
+  - containerfile
+scope: source.dockerfile
+
+contexts:
+  main:
+    - match: '^\s*(#)\s*(syntax|escape|check)\b'
+      captures:
+        1: punctuation.definition.comment.dockerfile
+        2: keyword.other.directive.dockerfile
+      push:
+        - meta_scope: comment.line.directive.dockerfile
+        - match: $\n?
+          pop: true
+    - match: '#'
+      scope: punctuation.definition.comment.dockerfile
+      push:
+        - meta_scope: comment.line.number-sign.dockerfile
+        - match: $\n?
+          pop: true
+    - match: '(?i)^\s*(ADD|ARG|CMD|COPY|ENTRYPOINT|ENV|EXPOSE|FROM|HEALTHCHECK|LABEL|MAINTAINER|ONBUILD|RUN|SHELL|STOPSIGNAL|USER|VOLUME|WORKDIR)\b'
+      scope: keyword.control.instruction.dockerfile
+    - match: '(?i)\b(AS)\b'
+      scope: keyword.operator.as.dockerfile
+    - include: strings
+    - include: variables
+
+  strings:
+    - match: '"'
+      scope: punctuation.definition.string.begin.dockerfile
+      push:
+        - meta_scope: string.quoted.double.dockerfile
+        - match: '\\.'
+          scope: constant.character.escape.dockerfile
+        - match: '"'
+          scope: punctuation.definition.string.end.dockerfile
+          pop: true
+        - include: variables
+    - match: "'"
+      scope: punctuation.definition.string.begin.dockerfile
+      push:
+        - meta_scope: string.quoted.single.dockerfile
+        - match: "'"
+          scope: punctuation.definition.string.end.dockerfile
+          pop: true
+
+  variables:
+    - match: '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?'
+      scope: variable.other.dockerfile
