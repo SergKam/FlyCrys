@@ -423,7 +423,7 @@ fn build_ui(app: &gtk::Application) {
                         &notification_level,
                     );
                     let page_num = notebook.append_page(&slot.wrapper, Some(&label));
-                    notebook.set_current_page(Some(page_num as u32));
+                    notebook.set_current_page(Some(page_num));
                     notebook.set_tab_reorderable(&slot.wrapper, true);
 
                     let mut state = app_state.borrow_mut();
@@ -1058,7 +1058,7 @@ fn clone_workspace(
         state.slots.push(slot);
     }
     // Switch after releasing the borrow (switch_page re-borrows app_state).
-    notebook.set_current_page(Some(page_num as u32));
+    notebook.set_current_page(Some(page_num));
 }
 
 /// Load the app logo for the About dialog.
