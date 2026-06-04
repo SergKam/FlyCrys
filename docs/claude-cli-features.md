@@ -167,7 +167,40 @@ We already parse this in `AgentEvent::System` but currently ignore it.
 ### Implementation Notes
 - `-p` mode + `--session-id` should work together — the session is stored by the CLI, we just need to supply the ID on reconnect.
 - Consider that `--continue` is CWD-scoped and may be simpler for a first pass.
-- Session files live in `~/.claude/sessions/` — we can read them directly to build the picker.
+- Session transcripts live in `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
+  (NOT `~/.claude/sessions/`). See "Session transcript storage" below.
+
+### Session transcript storage — VERIFIED (CLI v2.1.154, 2026-06-04)
+
+Claude Code stores each session as a JSONL transcript at:
+
+    ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+
+- `<encoded-cwd>` is the working directory with `/` and `.` replaced by `-`
+  (e.g. `/home/sergii/work/flycrys` → `-home-sergii-work-flycrys`).
+- The file name is the session UUID.
+- Every line is a JSON object with a top-level `sessionId` field equal to the
+  file's id. Other fields (`type`, `message.content`, `toolUseResult`,
+  `attachment`, …) may *mention* the id inside their text — that is content, not
+  the session key, and must not be rewritten.
+
+**Clone implementation — IMPLEMENTED** (`services::claude_session::clone_session`):
+copies `<old>.jsonl` → `<new>.jsonl` in the same project directory, rewriting
+only the top-level `sessionId` on each line (content references preserved). The
+source is located by globbing for the unique `<old>.jsonl`, so we don't have to
+reproduce the cwd encoding (which would break on paths with dots/underscores).
+The cloned workspace stores the new id as `agent_1_session_id`, so the two tabs
+no longer share — and can't corrupt — one session.
+
+**Official alternative (not used):** `claude --resume <id> --fork-session` asks
+the CLI to branch a session into a fresh one at spawn time (it assigns the new id
+and reports it in the `system` init event). That avoids depending on the on-disk
+format but needs spawn-time plumbing and leaves the clone without a session id
+until first launch. Revisit if Claude's storage layout changes.
+
+**Check on CLI upgrades:** confirm the `~/.claude/projects/<encoded-cwd>/<id>.jsonl`
+layout and the top-level `sessionId` field still hold; a live `--resume` of a
+copied transcript was not round-trip tested.
 
 ---
 

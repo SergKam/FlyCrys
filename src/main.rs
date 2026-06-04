@@ -1033,6 +1033,18 @@ fn clone_workspace(
     let base = new_cfg.tab_label();
     new_cfg.custom_tab_label = Some(format!("{base} (copy)"));
 
+    // Give the clone its OWN Claude session: copy the source's transcript under
+    // a fresh id so the two tabs don't share (and corrupt) one session. If the
+    // source had no session, or its transcript can't be found/copied, the clone
+    // starts fresh (the replayed flycrys chat history is still shown).
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+    let session_copied = new_cfg
+        .agent_1_session_id
+        .as_deref()
+        .map(|old| flycrys::services::claude_session::clone_session(old, &new_session_id))
+        .unwrap_or(false);
+    new_cfg.agent_1_session_id = session_copied.then_some(new_session_id);
+
     // Persist the clone's config and replayed history before materializing,
     // so the new workspace loads the conversation on creation.
     session::save_chat_history(&new_cfg.id, &history);
