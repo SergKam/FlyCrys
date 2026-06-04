@@ -9,6 +9,7 @@ pub mod bookmark_dialog;
 pub mod chat_entry;
 pub mod chat_webview;
 pub mod file_entry;
+pub mod find_bar;
 pub mod git_panel;
 pub mod highlight;
 pub mod markdown;
