@@ -160,6 +160,17 @@ impl Workspace {
 
         let (agent_name_label, token_label, cost_label) = create_status_labels();
 
+        // Selectable session-id field for the status bar, updated when the agent
+        // reports a session id (AgentDomainEvent::Started).
+        let session_label = gtk::Label::new(None);
+        session_label.add_css_class("statusbar-item");
+        session_label.set_selectable(true);
+        session_label.set_tooltip_text(Some("Claude session ID \u{2014} select to copy"));
+        set_session_label_text(
+            &session_label,
+            config.borrow().agent_1_session_id.as_deref(),
+        );
+
         let (agent_panel_1, agent_input_1, agent_on_theme_change) = {
             let profile = config.borrow().agent_1_profile.clone();
             let session_id = config.borrow().agent_1_session_id.clone();
@@ -168,7 +179,9 @@ impl Workspace {
                 cfg.borrow_mut().agent_1_profile = name.to_string();
             });
             let cfg = Rc::clone(&config);
+            let sess_label = session_label.clone();
             let on_session = Rc::new(move |id: Option<String>| {
+                set_session_label_text(&sess_label, id.as_deref());
                 cfg.borrow_mut().agent_1_session_id = id;
             });
             // Background task callbacks → run panel
@@ -248,8 +261,13 @@ impl Workspace {
         outer_paned.set_shrink_end_child(false);
 
         // Status bar
-        let status_bar =
-            create_status_bar(&working_dir, &agent_name_label, &token_label, &cost_label);
+        let status_bar = create_status_bar(
+            &working_dir,
+            &agent_name_label,
+            &token_label,
+            &cost_label,
+            &session_label,
+        );
 
         // Root container
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -805,17 +823,28 @@ fn wire_search_context_menu(
 
 // ── Status bar ───────────────────────────────────────────────────────────────
 
+/// Render the session-id field text (or an en-dash placeholder when unset).
+fn set_session_label_text(label: &gtk::Label, id: Option<&str>) {
+    match id {
+        Some(s) if !s.is_empty() => label.set_text(&format!("session: {s}")),
+        _ => label.set_text("session: \u{2013}"),
+    }
+}
+
 fn create_status_labels() -> (gtk::Label, gtk::Label, gtk::Label) {
     let agent_name = gtk::Label::new(Some("Agent"));
     agent_name.add_css_class("statusbar-item");
+    agent_name.set_selectable(true);
 
     let tokens = gtk::Label::new(Some("\u{2013}"));
     tokens.set_tooltip_text(Some("Context window usage"));
     tokens.add_css_class("statusbar-item");
+    tokens.set_selectable(true);
 
     let cost = gtk::Label::new(Some("$0.00"));
     cost.set_tooltip_text(Some("Session cost"));
     cost.add_css_class("statusbar-item");
+    cost.set_selectable(true);
 
     (agent_name, tokens, cost)
 }
@@ -825,6 +854,7 @@ fn create_status_bar(
     agent_name_label: &gtk::Label,
     token_label: &gtk::Label,
     cost_label: &gtk::Label,
+    session_label: &gtk::Label,
 ) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     bar.add_css_class("statusbar");
@@ -838,10 +868,14 @@ fn create_status_bar(
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     let branch_label = gtk::Label::new(None);
     branch_label.add_css_class("statusbar-item");
+    branch_label.set_selectable(true);
     if let Some(branch) = crate::services::git::current_branch(working_dir) {
         branch_label.set_text(&format!("git: {branch}"));
     }
     bar.append(&branch_label);
+
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    bar.append(session_label);
 
     // Watch .git/ directory for branch changes (instant update via inotify).
     // We watch the directory, not .git/HEAD directly, because git replaces HEAD
@@ -893,6 +927,8 @@ fn create_status_bar(
     let path_label = gtk::Label::new(Some(&working_dir.to_string_lossy()));
     path_label.add_css_class("statusbar-item");
     path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+    path_label.set_selectable(true);
+    path_label.set_tooltip_text(Some(&working_dir.to_string_lossy()));
     bar.append(&path_label);
 
     bar

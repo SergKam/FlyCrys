@@ -141,6 +141,75 @@ impl TabSlot {
         }
     }
 
+    /// True once the workspace UI has been built (i.e. it has a live run panel).
+    fn has_workspace(&self) -> bool {
+        self.workspace.is_some()
+    }
+
+    fn working_directory(&self) -> String {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().working_directory.clone()
+        } else if let Some(ref c) = self.pending_config {
+            c.working_directory.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    /// The Claude session id last reported by the agent (persisted in config).
+    fn session_id(&self) -> Option<String> {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().agent_1_session_id.clone()
+        } else if let Some(ref c) = self.pending_config {
+            c.agent_1_session_id.clone()
+        } else {
+            None
+        }
+    }
+
+    /// The current displayed tab title (custom label or directory basename).
+    fn tab_label_text(&self) -> String {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().tab_label()
+        } else if let Some(ref c) = self.pending_config {
+            c.tab_label()
+        } else {
+            String::new()
+        }
+    }
+
+    /// A clone of this tab's config (live if materialized, else the pending one).
+    fn config_snapshot(&self) -> WorkspaceConfig {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().clone()
+        } else {
+            self.pending_config
+                .clone()
+                .expect("TabSlot has neither workspace nor pending_config")
+        }
+    }
+
+    /// The chat history to replay into a clone — live in-memory if materialized,
+    /// otherwise read from disk.
+    fn chat_history_snapshot(&self) -> Vec<session::ChatMessage> {
+        if let Some(ref ws) = self.workspace {
+            ws.chat_history.borrow().clone()
+        } else {
+            session::load_chat_history(&self.workspace_id())
+        }
+    }
+
+    /// Set (or clear) the user's custom tab title and persist it.
+    fn set_custom_label(&mut self, label: Option<String>) {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow_mut().custom_tab_label = label;
+            session::save_workspace_config(&ws.config.borrow());
+        } else if let Some(ref mut c) = self.pending_config {
+            c.custom_tab_label = label;
+            session::save_workspace_config(c);
+        }
+    }
+
     /// Persist this tab's state to disk.
     fn save(&self) {
         if let Some(ref ws) = self.workspace {
@@ -196,7 +265,8 @@ fn build_ui(app: &gtk::Application) {
     let notebook = gtk::Notebook::new();
     notebook.set_scrollable(true);
     notebook.set_show_border(false);
-    notebook.popup_enable();
+    notebook.set_tab_pos(gtk::PositionType::Top);
+    // No popup_enable(): we provide our own right-click menu on tab labels.
 
     let app_state = Rc::new(RefCell::new(AppState {
         config: app_config.clone(),
@@ -270,6 +340,8 @@ fn build_ui(app: &gtk::Application) {
             &notebook,
             &slot.wrapper,
             &app_state,
+            &theme,
+            &notification_level,
         );
         notebook.append_page(&slot.wrapper, Some(&label));
         app_state.borrow_mut().slots.push(slot);
@@ -288,6 +360,8 @@ fn build_ui(app: &gtk::Application) {
                 &notebook,
                 &slot.wrapper,
                 &app_state,
+                &theme,
+                &notification_level,
             );
             notebook.append_page(&slot.wrapper, Some(&label));
             app_state.borrow_mut().slots.push(slot);
@@ -345,6 +419,8 @@ fn build_ui(app: &gtk::Application) {
                         &notebook,
                         &slot.wrapper,
                         &app_state,
+                        &theme,
+                        &notification_level,
                     );
                     let page_num = notebook.append_page(&slot.wrapper, Some(&label));
                     notebook.set_current_page(Some(page_num as u32));
@@ -623,12 +699,15 @@ fn build_settings_menu(
 }
 
 /// Create a tab label widget with spinner, text, and a close button
+#[allow(clippy::too_many_arguments)]
 fn create_tab_label(
     text: &str,
     tab_spinner: &gtk::Spinner,
     notebook: &gtk::Notebook,
     page_widget: &gtk::Box,
     app_state: &Rc<RefCell<AppState>>,
+    theme: &Rc<Cell<Theme>>,
+    notification_level: &Rc<Cell<NotificationLevel>>,
 ) -> gtk::Box {
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 4);
 
@@ -645,6 +724,36 @@ fn create_tab_label(
 
     hbox.append(&label);
     hbox.append(&close_btn);
+
+    // Right-click (secondary button) → workspace context menu.
+    let menu_click = gtk::GestureClick::new();
+    menu_click.set_button(gtk::gdk::BUTTON_SECONDARY);
+    {
+        let label = label.clone();
+        let notebook = notebook.clone();
+        let page_widget = page_widget.clone();
+        let app_state = Rc::clone(app_state);
+        let theme = Rc::clone(theme);
+        let notification_level = Rc::clone(notification_level);
+        let hbox_weak = hbox.downgrade();
+        menu_click.connect_pressed(move |gesture, _n, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(anchor) = hbox_weak.upgrade() {
+                show_tab_menu(
+                    &anchor,
+                    &label,
+                    &notebook,
+                    &page_widget,
+                    &app_state,
+                    &theme,
+                    &notification_level,
+                    x,
+                    y,
+                );
+            }
+        });
+    }
+    hbox.add_controller(menu_click);
 
     close_btn.connect_clicked(glib::clone!(
         #[weak]
@@ -691,6 +800,265 @@ fn create_tab_label(
     ));
 
     hbox
+}
+
+/// Free a transient popover after it closes (GTK4 popovers created on the fly
+/// must be unparented or they leak).
+fn unparent_on_close(popover: &gtk::Popover) {
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+}
+
+/// Build and show the workspace context menu for a tab.
+#[allow(clippy::too_many_arguments)]
+fn show_tab_menu(
+    anchor: &gtk::Box,
+    label: &gtk::Label,
+    notebook: &gtk::Notebook,
+    page_widget: &gtk::Box,
+    app_state: &Rc<RefCell<AppState>>,
+    theme: &Rc<Cell<Theme>>,
+    notification_level: &Rc<Cell<NotificationLevel>>,
+    x: f64,
+    y: f64,
+) {
+    // Read current slot facts under a short borrow.
+    let (has_ws, session_id, working_dir) = {
+        let state = app_state.borrow();
+        match state.slots.iter().find(|s| s.wrapper == *page_widget) {
+            Some(slot) => (
+                slot.has_workspace(),
+                slot.session_id(),
+                slot.working_directory(),
+            ),
+            None => return,
+        }
+    };
+
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+    unparent_on_close(&popover);
+
+    let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let make_item = |text: &str| {
+        let b = gtk::Button::with_label(text);
+        b.set_has_frame(false);
+        b.set_hexpand(true);
+        if let Some(lbl) = b.child().and_downcast::<gtk::Label>() {
+            lbl.set_xalign(0.0);
+        }
+        b
+    };
+
+    // Rename ----------------------------------------------------------------
+    let rename = make_item("Rename workspace");
+    rename.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        anchor,
+        #[weak]
+        label,
+        #[weak]
+        page_widget,
+        #[strong]
+        app_state,
+        move |_| {
+            popover.popdown();
+            show_rename_popover(&anchor, &label, &page_widget, &app_state);
+        }
+    ));
+    menu_box.append(&rename);
+
+    // Clone -----------------------------------------------------------------
+    let clone_item = make_item("Clone workspace");
+    clone_item.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        notebook,
+        #[weak]
+        page_widget,
+        #[strong]
+        app_state,
+        #[strong]
+        theme,
+        #[strong]
+        notification_level,
+        move |_| {
+            popover.popdown();
+            clone_workspace(
+                &notebook,
+                &page_widget,
+                &app_state,
+                &theme,
+                &notification_level,
+            );
+        }
+    ));
+    menu_box.append(&clone_item);
+
+    // Open session in Claude CLI -------------------------------------------
+    let cli_item = make_item("Open session in Claude CLI");
+    if has_ws && session_id.is_some() {
+        cli_item.connect_clicked(glib::clone!(
+            #[weak]
+            popover,
+            #[weak]
+            page_widget,
+            #[strong]
+            app_state,
+            move |_| {
+                popover.popdown();
+                let state = app_state.borrow();
+                if let Some(slot) = state.slots.iter().find(|s| s.wrapper == page_widget)
+                    && let Some(ws) = slot.workspace.as_ref()
+                    && let Some(sid) = slot.session_id()
+                {
+                    ws.run_panel.open_claude_session(&sid);
+                }
+            }
+        ));
+    } else {
+        cli_item.set_sensitive(false);
+        cli_item.set_tooltip_text(Some(if has_ws {
+            "No Claude session yet \u{2014} start the agent first"
+        } else {
+            "Open this workspace first"
+        }));
+    }
+    menu_box.append(&cli_item);
+
+    // Open folder in file manager ------------------------------------------
+    let folder_item = make_item("Open folder in file manager");
+    folder_item.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        move |_| {
+            popover.popdown();
+            if let Err(e) = flycrys::services::platform::open_with_default(&working_dir) {
+                eprintln!("flycrys: open folder failed: {e}");
+            }
+        }
+    ));
+    menu_box.append(&folder_item);
+
+    popover.set_child(Some(&menu_box));
+    popover.popup();
+}
+
+/// Show an inline entry popover to rename a workspace tab.
+fn show_rename_popover(
+    anchor: &gtk::Box,
+    label: &gtk::Label,
+    page_widget: &gtk::Box,
+    app_state: &Rc<RefCell<AppState>>,
+) {
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_position(gtk::PositionType::Bottom);
+    unparent_on_close(&popover);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let heading = gtk::Label::new(Some("Rename workspace"));
+    heading.set_xalign(0.0);
+    let entry = gtk::Entry::new();
+    entry.set_text(&label.text());
+    entry.set_hexpand(true);
+    entry.set_placeholder_text(Some("Blank resets to folder name"));
+    vbox.append(&heading);
+    vbox.append(&entry);
+    popover.set_child(Some(&vbox));
+
+    entry.connect_activate(glib::clone!(
+        #[weak]
+        popover,
+        #[weak]
+        label,
+        #[weak]
+        page_widget,
+        #[strong]
+        app_state,
+        move |entry| {
+            let trimmed = entry.text().trim().to_string();
+            let custom = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
+            {
+                let mut state = app_state.borrow_mut();
+                if let Some(slot) = state.slots.iter_mut().find(|s| s.wrapper == page_widget) {
+                    slot.set_custom_label(custom);
+                    label.set_text(&slot.tab_label_text());
+                }
+            }
+            popover.popdown();
+        }
+    ));
+
+    popover.popup();
+    entry.grab_focus();
+}
+
+/// Clone a workspace: a new tab on the same folder, replaying the source's chat
+/// history so the new agent continues with the same context.
+fn clone_workspace(
+    notebook: &gtk::Notebook,
+    page_widget: &gtk::Box,
+    app_state: &Rc<RefCell<AppState>>,
+    theme: &Rc<Cell<Theme>>,
+    notification_level: &Rc<Cell<NotificationLevel>>,
+) {
+    // Snapshot source config + history under a short borrow, then release it.
+    let (mut new_cfg, history) = {
+        let state = app_state.borrow();
+        let Some(slot) = state.slots.iter().find(|s| s.wrapper == *page_widget) else {
+            return;
+        };
+        (slot.config_snapshot(), slot.chat_history_snapshot())
+    };
+
+    // Re-key the clone: fresh workspace id and fresh run-tab ids (terminal
+    // scrollback files are keyed by these).
+    new_cfg.id = uuid::Uuid::new_v4().to_string();
+    for rt in &mut new_cfg.run_tabs {
+        rt.id = uuid::Uuid::new_v4().to_string();
+    }
+    let base = new_cfg.tab_label();
+    new_cfg.custom_tab_label = Some(format!("{base} (copy)"));
+
+    // Persist the clone's config and replayed history before materializing,
+    // so the new workspace loads the conversation on creation.
+    session::save_chat_history(&new_cfg.id, &history);
+    session::save_workspace_config(&new_cfg);
+
+    let label_text = new_cfg.tab_label();
+    let slot = TabSlot::new_ready(new_cfg, Rc::clone(theme), Rc::clone(notification_level));
+    let label = create_tab_label(
+        &label_text,
+        &slot.spinner,
+        notebook,
+        &slot.wrapper,
+        app_state,
+        theme,
+        notification_level,
+    );
+    let page_num = notebook.append_page(&slot.wrapper, Some(&label));
+    notebook.set_tab_reorderable(&slot.wrapper, true);
+
+    {
+        let mut state = app_state.borrow_mut();
+        state.config.workspace_ids.push(slot.workspace_id());
+        state.slots.push(slot);
+    }
+    // Switch after releasing the borrow (switch_page re-borrows app_state).
+    notebook.set_current_page(Some(page_num as u32));
 }
 
 /// Load the app logo for the About dialog.
