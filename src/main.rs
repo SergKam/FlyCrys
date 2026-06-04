@@ -167,6 +167,17 @@ impl TabSlot {
         }
     }
 
+    /// Whether the next use of `session_id` should fork it (clone, pre-launch).
+    fn fork_session(&self) -> bool {
+        if let Some(ref ws) = self.workspace {
+            ws.config.borrow().fork_session
+        } else if let Some(ref c) = self.pending_config {
+            c.fork_session
+        } else {
+            false
+        }
+    }
+
     /// The current displayed tab title (custom label or directory basename).
     fn tab_label_text(&self) -> String {
         if let Some(ref ws) = self.workspace {
@@ -920,7 +931,7 @@ fn show_tab_menu(
                     && let Some(ws) = slot.workspace.as_ref()
                     && let Some(sid) = slot.session_id()
                 {
-                    ws.run_panel.open_claude_session(&sid);
+                    ws.run_panel.open_claude_session(&sid, slot.fork_session());
                 }
             }
         ));
@@ -1033,17 +1044,11 @@ fn clone_workspace(
     let base = new_cfg.tab_label();
     new_cfg.custom_tab_label = Some(format!("{base} (copy)"));
 
-    // Give the clone its OWN Claude session: copy the source's transcript under
-    // a fresh id so the two tabs don't share (and corrupt) one session. If the
-    // source had no session, or its transcript can't be found/copied, the clone
-    // starts fresh (the replayed flycrys chat history is still shown).
-    let new_session_id = uuid::Uuid::new_v4().to_string();
-    let session_copied = new_cfg
-        .agent_1_session_id
-        .as_deref()
-        .map(|old| flycrys::services::claude_session::clone_session(old, &new_session_id))
-        .unwrap_or(false);
-    new_cfg.agent_1_session_id = session_copied.then_some(new_session_id);
+    // Give the clone its OWN Claude session: keep the source session id but
+    // mark it to fork on first launch (`--resume <id> --fork-session`), so the
+    // two tabs branch into independent sessions natively rather than sharing —
+    // and possibly corrupting — one. No-op when there is no source session yet.
+    new_cfg.fork_session = new_cfg.agent_1_session_id.is_some();
 
     // Persist the clone's config and replayed history before materializing,
     // so the new workspace loads the conversation on creation.

@@ -174,6 +174,7 @@ impl Workspace {
         let (agent_panel_1, agent_input_1, agent_on_theme_change) = {
             let profile = config.borrow().agent_1_profile.clone();
             let session_id = config.borrow().agent_1_session_id.clone();
+            let fork_session = config.borrow().fork_session;
             let cfg = Rc::clone(&config);
             let on_profile = Rc::new(move |name: &str| {
                 cfg.borrow_mut().agent_1_profile = name.to_string();
@@ -182,7 +183,11 @@ impl Workspace {
             let sess_label = session_label.clone();
             let on_session = Rc::new(move |id: Option<String>| {
                 set_session_label_text(&sess_label, id.as_deref());
-                cfg.borrow_mut().agent_1_session_id = id;
+                let mut c = cfg.borrow_mut();
+                c.agent_1_session_id = id;
+                // Any pending fork is consumed (or no longer applies) once the
+                // session id changes.
+                c.fork_session = false;
             });
             // Background task callbacks → run panel
             let on_bg_task: Option<Rc<dyn Fn(String, String)>> = {
@@ -218,6 +223,7 @@ impl Workspace {
                 agent_configs,
                 &profile,
                 session_id,
+                fork_session,
                 on_profile,
                 on_session,
                 Rc::clone(&chat_history),

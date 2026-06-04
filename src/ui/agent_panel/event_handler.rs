@@ -29,6 +29,9 @@ pub(crate) fn handle_domain_event(
             let mut s = state.borrow_mut();
             if let Some(ref id) = session_id {
                 s.process.session_id = Some(id.clone());
+                // A session id means any pending fork has been performed; resume
+                // it normally from here on.
+                s.process.fork_session = false;
                 (s.on_session_id_change)(Some(id.clone()));
             }
             if let Some(ctx) = context_window {

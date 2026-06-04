@@ -36,6 +36,10 @@ pub struct WorkspaceConfig {
     pub terminal_visible: bool,
     pub agent_1_profile: String,
     pub agent_1_session_id: Option<String>,
+    /// When true, the next agent spawn forks `agent_1_session_id` into a new
+    /// session (`--resume <id> --fork-session`) instead of resuming it. Set by
+    /// "Clone workspace"; cleared once a (forked) session id is reported.
+    pub fork_session: bool,
     pub panel_mode: PanelMode,
     pub run_tabs: Vec<RunTabConfig>,
     pub active_run_tab: usize,
@@ -58,6 +62,7 @@ impl WorkspaceConfig {
             terminal_visible: false,
             agent_1_profile: default_profile(),
             agent_1_session_id: None,
+            fork_session: false,
             panel_mode: PanelMode::default(),
             run_tabs: vec![RunTabConfig {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -107,6 +112,8 @@ struct WorkspaceConfigRaw {
     agent_1_profile: String,
     #[serde(default)]
     agent_1_session_id: Option<String>,
+    #[serde(default)]
+    fork_session: bool,
 
     // New field
     #[serde(default)]
@@ -171,6 +178,7 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
             terminal_visible: raw.terminal_visible,
             agent_1_profile: raw.agent_1_profile,
             agent_1_session_id: raw.agent_1_session_id,
+            fork_session: raw.fork_session,
             panel_mode,
             run_tabs,
             active_run_tab: raw.active_run_tab,

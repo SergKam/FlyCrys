@@ -62,7 +62,21 @@ fn workspace_config_legacy_without_custom_label() {
     let json = r#"{"id":"x","working_directory":"/home/user/legacy"}"#;
     let ws: WorkspaceConfig = serde_json::from_str(json).unwrap();
     assert_eq!(ws.custom_tab_label, None);
+    assert!(
+        !ws.fork_session,
+        "legacy configs default fork_session to false"
+    );
     assert_eq!(ws.tab_label(), "legacy");
+}
+
+#[test]
+fn workspace_config_fork_session_roundtrip() {
+    let mut ws = WorkspaceConfig::new("/home/user/test");
+    assert!(!ws.fork_session, "fork_session defaults to false");
+    ws.fork_session = true;
+    let json = serde_json::to_string(&ws).unwrap();
+    let back: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+    assert!(back.fork_session);
 }
 
 #[test]

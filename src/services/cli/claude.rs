@@ -676,6 +676,10 @@ impl AgentBackend for ClaudeBackend {
         }
         if let Some(ref session_id) = config.resume_session_id {
             cmd.arg("--resume").arg(session_id);
+            // Branch into a fresh session instead of continuing this one.
+            if config.fork_session {
+                cmd.arg("--fork-session");
+            }
         }
 
         if let Some(slave) = pty_slave {
