@@ -28,6 +28,10 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
 // --- Text/Display ---
 pub const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+/// Above this size a file is shown as plain text even when a grammar exists:
+/// per-line syntax tagging becomes janky on large files. Files are still opened
+/// (up to `MAX_FILE_SIZE_BYTES`), just without highlighting.
+pub const HIGHLIGHT_MAX_BYTES: usize = 1024 * 1024;
 pub const DISPLAY_TRUNCATE_AT: usize = 60;
 pub const DISPLAY_TRUNCATE_KEEP: usize = 57;
 pub const OUTPUT_COLLAPSE_THRESHOLD: usize = 2000;
@@ -88,41 +92,6 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "sv
 /// Supported image MIME types for attachment.
 pub const SUPPORTED_IMAGE_MIME: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-/// File extensions considered highlightable (text/code files worth highlighting).
-pub const HIGHLIGHTABLE_EXTENSIONS: &[&str] = &[
-    "js",
-    "mjs",
-    "cjs",
-    "jsx",
-    "ts",
-    "tsx",
-    "json",
-    "css",
-    "scss",
-    "less",
-    "html",
-    "htm",
-    "xml",
-    "svg",
-    "yaml",
-    "yml",
-    "toml",
-    "rs",
-    "py",
-    "rb",
-    "go",
-    "java",
-    "c",
-    "h",
-    "cpp",
-    "hpp",
-    "sh",
-    "bash",
-    "zsh",
-    "md",
-    "mdx",
-    "sql",
-    "dockerfile",
-    "makefile",
-    "lua",
-];
+// Note: there is no highlightable-extension allow-list. The source viewer asks
+// syntect directly whether a grammar exists for a file's extension (see
+// `highlight::is_highlightable`); anything unknown falls back to plain text.

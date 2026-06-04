@@ -6,9 +6,12 @@ use flycrys::highlight;
 
 #[test]
 fn highlightable_common_extensions() {
+    // Note: toml/dockerfile are intentionally absent — syntect's default set
+    // ships no grammar for them, so they honestly render as plain text. (The
+    // old allow-list listed them, but they were never actually colored.)
     let extensions = [
         "rs", "js", "ts", "py", "go", "java", "c", "cpp", "html", "css", "json", "yaml", "yml",
-        "toml", "md", "sql", "sh", "bash", "rb",
+        "md", "sql", "sh", "bash", "rb",
     ];
     for ext in extensions {
         let path = format!("test.{ext}");
@@ -36,7 +39,12 @@ fn not_highlightable_binary_formats() {
 
 #[test]
 fn not_highlightable_no_extension() {
-    assert!(!highlight::is_highlightable("Makefile"));
+    // Genuinely unknown extensionless files fall back to plain text.
+    assert!(!highlight::is_highlightable("LICENSE"));
+    assert!(!highlight::is_highlightable("CHANGELOG"));
+    // A real `Makefile` IS highlightable now — syntect recognizes it by name,
+    // which the old lowercase "makefile" allow-list entry silently missed.
+    assert!(highlight::is_highlightable("Makefile"));
 }
 
 // ──────────────────────────────────────────────────────────────────────

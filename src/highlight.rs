@@ -286,10 +286,98 @@ fn escape_pango(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Check if a file extension is likely a text/code file worth highlighting.
+/// Whether the source viewer should run the syntax highlighter for this file,
+/// as opposed to displaying it as plain text.
+///
+/// Rather than maintain a hand-curated extension allow-list (which inevitably
+/// drifts out of sync with the grammar set), we ask syntect directly: a file is
+/// "highlightable" iff a real grammar resolves for its extension. Anything with
+/// no known grammar falls back to plain `set_text`, which is correct and fast.
+///
+/// Binary files and oversized files never reach this check — they are rejected
+/// earlier in `textview::load_file` (non-UTF-8 read failure and the 10 MB cap).
 pub fn is_highlightable(file_path: &str) -> bool {
-    use crate::config::constants::HIGHLIGHTABLE_EXTENSIONS;
-
     let ext = file_path.rsplit('.').next().unwrap_or("");
-    HIGHLIGHTABLE_EXTENSIONS.contains(&ext)
+    if ext.is_empty() {
+        return false;
+    }
+    SYNTAX_SET.with(|default_ss| {
+        CUSTOM_SYNTAX_SET.with(|custom_ss| {
+            let (_, syntax) = resolve_syntax(default_ss, custom_ss, ext);
+            // resolve_syntax falls back to the "Plain Text" grammar when nothing
+            // matches; that is precisely the case we want to skip.
+            syntax.name != "Plain Text"
+        })
+    })
+}
+
+/// Whether the source viewer should highlight a file of `byte_len` bytes.
+///
+/// Combines grammar availability ([`is_highlightable`]) with a size ceiling
+/// ([`HIGHLIGHT_MAX_BYTES`]): above the ceiling, per-line tagging causes UI
+/// jank, so the file is shown as plain text even when a grammar exists.
+pub fn should_highlight(file_path: &str, byte_len: usize) -> bool {
+    use crate::config::constants::HIGHLIGHT_MAX_BYTES;
+    byte_len <= HIGHLIGHT_MAX_BYTES && is_highlightable(file_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// syntect's bundled default set ships a PHP syntax, so resolution must land
+    /// on the real "PHP" grammar (not the plain-text fallback) for both extensions.
+    #[test]
+    fn php_resolves_to_php_syntax() {
+        let default_ss = SyntaxSet::load_defaults_newlines();
+        static BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/custom_syntaxes.packdump"));
+        let custom_ss: SyntaxSet =
+            syntect::dumps::from_uncompressed_data(BYTES).expect("bad custom syntax packdump");
+
+        for ext in ["php", "phtml"] {
+            let (_, syntax) = resolve_syntax(&default_ss, &custom_ss, ext);
+            assert_eq!(syntax.name, "PHP", "extension {ext} should resolve to PHP");
+        }
+    }
+
+    /// syntect-driven detection highlights every language with a real grammar —
+    /// including PHP and the extension variants the old hand-curated list missed
+    /// (C++ `.cc`, Python `.pyw`, `.markdown`, capital-M `Makefile`).
+    #[test]
+    fn highlightable_covers_known_grammars() {
+        for path in [
+            "index.php",
+            "template.phtml",
+            "main.rs",
+            "app.cc",     // C++ variant missed by the old list
+            "script.pyw", // Python variant missed by the old list
+            "README.markdown",
+            "Makefile",
+            "Service.scala",
+            "lib.hs",
+        ] {
+            assert!(is_highlightable(path), "{path} should be highlightable");
+        }
+    }
+
+    /// Files with no grammar (plain text, unknown extensions, extensionless)
+    /// take the fast `set_text` path instead of the highlighter.
+    #[test]
+    fn unknown_and_plain_files_are_not_highlightable() {
+        assert!(!is_highlightable("notes.txt"));
+        assert!(!is_highlightable("data.unknownext"));
+        assert!(!is_highlightable("LICENSE"));
+    }
+
+    /// A grammar-backed file is highlighted up to the size ceiling, and shown as
+    /// plain text above it — even though the grammar still resolves.
+    #[test]
+    fn should_highlight_respects_size_ceiling() {
+        use crate::config::constants::HIGHLIGHT_MAX_BYTES;
+        assert!(should_highlight("main.rs", 0));
+        assert!(should_highlight("main.rs", HIGHLIGHT_MAX_BYTES));
+        assert!(!should_highlight("main.rs", HIGHLIGHT_MAX_BYTES + 1));
+        // No grammar: never highlighted, regardless of size.
+        assert!(!should_highlight("notes.txt", 10));
+    }
 }

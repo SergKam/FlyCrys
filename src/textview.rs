@@ -293,7 +293,7 @@ pub fn load_file(
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let line_count = content.lines().count().max(1);
-            if highlight::is_highlightable(file_path) {
+            if highlight::should_highlight(file_path, content.len()) {
                 highlight::highlight_buffer_with_theme(&buffer, &content, file_path, theme);
             } else {
                 buffer.set_text(&content);
