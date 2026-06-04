@@ -16,6 +16,10 @@ pub(crate) type TaskCompletedCb = Option<Rc<dyn Fn(String, String, Option<String
 pub(crate) struct AgentProcessState {
     pub process: ClaudeBackend,
     pub session_id: Option<String>,
+    /// When true, the next spawn forks `session_id` (`--fork-session`) rather
+    /// than resuming it. Set for cloned workspaces; cleared once the agent
+    /// reports a (forked) session id.
+    pub fork_session: bool,
     pub working_dir: std::path::PathBuf,
 }
 

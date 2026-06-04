@@ -220,8 +220,10 @@ impl RunPanel {
     }
 
     /// Open a fresh shell tab and resume the given Claude session in it by
-    /// running `claude --resume <session_id>` in the workspace directory.
-    pub fn open_claude_session(&self, session_id: &str) {
+    /// running `claude --resume <session_id>` in the workspace directory. When
+    /// `fork` is true, `--fork-session` is added so the terminal branches into a
+    /// new session instead of writing to the (shared) source.
+    pub fn open_claude_session(&self, session_id: &str, fork: bool) {
         self.inner.container.set_visible(true);
         let page_idx = self.add_shell_tab(); // spawns a shell in the working dir
         self.inner.notebook.set_current_page(Some(page_idx as u32));
@@ -233,7 +235,8 @@ impl RunPanel {
         {
             // Single-quote the id (it's a UUID, but stay safe) and run it.
             let escaped = session_id.replace('\'', "'\\''");
-            let cmd = format!("claude --resume '{escaped}'\n");
+            let fork_flag = if fork { " --fork-session" } else { "" };
+            let cmd = format!("claude --resume '{escaped}'{fork_flag}\n");
             vte.feed_child(cmd.as_bytes());
             vte.grab_focus();
         }

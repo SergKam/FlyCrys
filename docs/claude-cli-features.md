@@ -170,37 +170,34 @@ We already parse this in `AgentEvent::System` but currently ignore it.
 - Session transcripts live in `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
   (NOT `~/.claude/sessions/`). See "Session transcript storage" below.
 
-### Session transcript storage — VERIFIED (CLI v2.1.154, 2026-06-04)
+### Clone workspace = fork session — IMPLEMENTED
 
-Claude Code stores each session as a JSONL transcript at:
+"Clone workspace" gives the new tab an **independent** Claude session via the
+CLI's native fork, rather than copying transcript files:
 
-    ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+- The clone keeps the source `agent_1_session_id` and sets a `fork_session` flag
+  on its `WorkspaceConfig`.
+- On the clone's **first** agent spawn we pass `claude --resume <source-id>
+  --fork-session`. The CLI branches the session into a fresh one, assigns a new
+  id, and reports it in the `system` init event — which we capture
+  (`AgentDomainEvent::Started`) and persist as the new `agent_1_session_id`.
+- The flag is cleared once that id arrives, so subsequent messages just
+  `--resume <new-id>` (no further forking).
+- "Open session in Claude CLI" passes `--fork-session` too while a fork is
+  pending, so the terminal branches instead of writing to the shared source.
 
-- `<encoded-cwd>` is the working directory with `/` and `.` replaced by `-`
-  (e.g. `/home/sergii/work/flycrys` → `-home-sergii-work-flycrys`).
-- The file name is the session UUID.
-- Every line is a JSON object with a top-level `sessionId` field equal to the
-  file's id. Other fields (`type`, `message.content`, `toolUseResult`,
-  `attachment`, …) may *mention* the id inside their text — that is content, not
-  the session key, and must not be rewritten.
+This is the native mechanism, so it does not depend on Claude's on-disk layout
+(below) and is robust across CLI upgrades. Trade-off: the fork is *lazy* — the
+clone shows the source session id until its first launch.
 
-**Clone implementation — IMPLEMENTED** (`services::claude_session::clone_session`):
-copies `<old>.jsonl` → `<new>.jsonl` in the same project directory, rewriting
-only the top-level `sessionId` on each line (content references preserved). The
-source is located by globbing for the unique `<old>.jsonl`, so we don't have to
-reproduce the cwd encoding (which would break on paths with dots/underscores).
-The cloned workspace stores the new id as `agent_1_session_id`, so the two tabs
-no longer share — and can't corrupt — one session.
+#### On-disk session storage (reference only — VERIFIED CLI v2.1.154)
 
-**Official alternative (not used):** `claude --resume <id> --fork-session` asks
-the CLI to branch a session into a fresh one at spawn time (it assigns the new id
-and reports it in the `system` init event). That avoids depending on the on-disk
-format but needs spawn-time plumbing and leaves the clone without a session id
-until first launch. Revisit if Claude's storage layout changes.
-
-**Check on CLI upgrades:** confirm the `~/.claude/projects/<encoded-cwd>/<id>.jsonl`
-layout and the top-level `sessionId` field still hold; a live `--resume` of a
-copied transcript was not round-trip tested.
+Not relied on for cloning anymore, but documented since it took reverse
+engineering. Claude stores each session as a JSONL transcript at
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is
+the working directory with `/` and `.` replaced by `-`. Every line is a JSON
+object with a top-level `sessionId` equal to the file's id (content/tool fields
+may *mention* the id but are not the key).
 
 ---
 

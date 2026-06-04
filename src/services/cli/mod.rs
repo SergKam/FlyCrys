@@ -77,6 +77,9 @@ pub struct AgentSpawnConfig {
     pub allowed_tools: Vec<String>,
     pub model: Option<String>,
     pub resume_session_id: Option<String>,
+    /// Fork `resume_session_id` into a new session instead of resuming it
+    /// (adds `--fork-session`). Ignored when `resume_session_id` is `None`.
+    pub fork_session: bool,
 }
 
 /// Backend trait for agent CLI interaction.

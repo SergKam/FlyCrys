@@ -45,6 +45,7 @@ pub fn create_agent_panel(
     agent_configs: Vec<AgentConfig>,
     initial_profile: &str,
     resume_session_id: Option<String>,
+    fork_session: bool,
     on_profile_change: Rc<dyn Fn(&str)>,
     on_session_id_change: Rc<dyn Fn(Option<String>)>,
     chat_history: Rc<RefCell<Vec<ChatMessage>>>,
@@ -242,6 +243,7 @@ pub fn create_agent_panel(
         process: AgentProcessState {
             process: ClaudeBackend::new(),
             session_id: resume_session_id,
+            fork_session,
             working_dir: working_dir.to_path_buf(),
         },
         tokens: TokenState {
@@ -433,6 +435,7 @@ pub fn create_agent_panel(
                         allowed_tools: cfg.map(|c| c.allowed_tools.clone()).unwrap_or_default(),
                         model: cfg.and_then(|c| c.model.clone()),
                         resume_session_id: s.process.session_id.clone(),
+                        fork_session: s.process.fork_session,
                     }
                 };
 
