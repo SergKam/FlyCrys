@@ -96,6 +96,16 @@ pub(crate) fn handle_domain_event(
         } => {
             let mut s = state.borrow_mut();
 
+            // AskUserQuestion is rendered as an interactive card via the control
+            // protocol (AskUserQuestion event), not as a generic tool call. Its
+            // tool_result is likewise suppressed (never added to pending_tools).
+            if name == "AskUserQuestion" {
+                s.chat.current_streaming = false;
+                s.chat.current_stream_id = None;
+                s.chat.current_text.clear();
+                return;
+            }
+
             // Detect background Bash tasks
             if name == "Bash"
                 && let Ok(val) = serde_json::from_str::<serde_json::Value>(&input_json)
@@ -306,6 +316,16 @@ pub(crate) fn handle_domain_event(
                 cb();
             }
 
+            s.chat.webview.scroll_to_bottom();
+        }
+
+        AgentDomainEvent::AskUserQuestion {
+            request_id,
+            input_json,
+        } => {
+            let mut s = state.borrow_mut();
+            remove_thinking(&mut s);
+            s.chat.webview.append_question(&request_id, &input_json);
             s.chat.webview.scroll_to_bottom();
         }
 
