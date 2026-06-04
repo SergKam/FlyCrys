@@ -106,8 +106,10 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; paddi
 .question-card .q-block:last-of-type { margin-bottom: 8px; }
 .question-card .q-header { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; margin-bottom: 2px; }
 .question-card .q-text { font-weight: 600; margin-bottom: 6px; }
-.question-card .q-option { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.question-card .q-option { display: flex; align-items: flex-start; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
 .question-card .q-option:hover { background: rgba(128,128,128,0.12); }
+.question-card .q-option input { margin-top: 3px; flex: 0 0 auto; }
+.question-card .q-opt-text { display: flex; flex-direction: column; gap: 2px; }
 .question-card .q-opt-label { font-weight: 500; }
 .question-card .q-opt-desc { opacity: 0.6; font-size: 0.9em; }
 .question-card .q-submit { margin-top: 4px; padding: 5px 14px; border: none; border-radius: 6px; background: #3584e4; color: #fff; font-size: 0.9em; cursor: pointer; }
@@ -245,16 +247,19 @@ function appendQuestionCard(id, rid, questionsJson) {
             inp.name = id + '_q' + qi;
             inp.value = opt.label;
             label.appendChild(inp);
+            var txt = document.createElement('span');
+            txt.className = 'q-opt-text';
             var t = document.createElement('span');
             t.className = 'q-opt-label';
             t.textContent = opt.label;
-            label.appendChild(t);
+            txt.appendChild(t);
             if (opt.description) {
                 var d = document.createElement('span');
                 d.className = 'q-opt-desc';
-                d.textContent = ' — ' + opt.description;
-                label.appendChild(d);
+                d.textContent = opt.description;
+                txt.appendChild(d);
             }
+            label.appendChild(txt);
             block.appendChild(label);
         });
         card.appendChild(block);
