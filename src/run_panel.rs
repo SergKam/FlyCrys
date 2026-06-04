@@ -65,6 +65,8 @@ struct RunTabSlot {
     kind: TabKind,
     dirty: Rc<Cell<bool>>,
     materialized: Cell<bool>,
+    /// Command to run once, on first materialization (shell tabs only).
+    pending_command: RefCell<Option<String>>,
 }
 
 // ── RunPanel (Rc wrapper for cheap cloning into closures) ───────────────────
@@ -225,21 +227,15 @@ impl RunPanel {
     /// new session instead of writing to the (shared) source.
     pub fn open_claude_session(&self, session_id: &str, fork: bool) {
         self.inner.container.set_visible(true);
-        let page_idx = self.add_shell_tab(); // spawns a shell in the working dir
+        // Single-quote the id (it's a UUID, but stay safe).
+        let escaped = session_id.replace('\'', "'\\''");
+        let fork_flag = if fork { " --fork-session" } else { "" };
+        let command = format!("claude --resume '{escaped}'{fork_flag}");
+        // Run it as the shell's startup command rather than typing it in: a
+        // freshly-spawned shell swallows early `feed_child` input during its
+        // TTY setup.
+        let page_idx = self.add_shell_tab_with_command(Some(command));
         self.inner.notebook.set_current_page(Some(page_idx as u32));
-
-        let tabs = self.inner.tabs.borrow();
-        if let Some(tab) = tabs.get(page_idx)
-            && let TabKind::Shell { terminal, .. } = &tab.kind
-            && let Some(ref vte) = *terminal.borrow()
-        {
-            // Single-quote the id (it's a UUID, but stay safe) and run it.
-            let escaped = session_id.replace('\'', "'\\''");
-            let fork_flag = if fork { " --fork-session" } else { "" };
-            let cmd = format!("claude --resume '{escaped}'{fork_flag}\n");
-            vte.feed_child(cmd.as_bytes());
-            vte.grab_focus();
-        }
     }
 
     /// Apply theme colors to all materialized terminals.
@@ -340,6 +336,7 @@ impl RunPanel {
             },
             dirty: Rc::new(Cell::new(false)),
             materialized: Cell::new(false),
+            pending_command: RefCell::new(None),
         };
 
         // Materialize immediately (task tabs are lightweight)
@@ -422,18 +419,26 @@ impl RunPanel {
     // ── Private: shell tab operations ───────────────────────────────────────
 
     fn add_shell_tab(&self) -> usize {
+        self.add_shell_tab_with_command(None)
+    }
+
+    /// Add a shell tab, optionally running `command` on first materialization.
+    fn add_shell_tab_with_command(&self, command: Option<String>) -> usize {
         let num = self.inner.next_bash_number.get();
         self.inner.next_bash_number.set(num + 1);
-        let name = format!("bash({num})");
-        let id = uuid::Uuid::new_v4().to_string();
 
         let cfg = RunTabConfig {
-            id,
-            name,
+            id: uuid::Uuid::new_v4().to_string(),
+            name: format!("bash({num})"),
             tab_type: RunTabType::Shell,
         };
 
         let page_idx = self.add_tab_from_config(&cfg);
+        if let Some(cmd) = command
+            && let Some(tab) = self.inner.tabs.borrow().get(page_idx)
+        {
+            *tab.pending_command.borrow_mut() = Some(cmd);
+        }
         self.materialize_tab(page_idx);
         self.update_close_button_sensitivity();
         page_idx
@@ -459,6 +464,7 @@ impl RunPanel {
             },
             dirty: Rc::new(Cell::new(false)),
             materialized: Cell::new(false),
+            pending_command: RefCell::new(None),
         };
 
         self.inner.tabs.borrow_mut().push(slot);
@@ -506,7 +512,10 @@ impl RunPanel {
                 terminal::restore_scrollback(&vte, &term_path);
 
                 let wd = self.inner.working_directory.to_string_lossy().to_string();
-                terminal::spawn_shell(&vte, &wd);
+                match tab.pending_command.borrow_mut().take() {
+                    Some(cmd) => terminal::spawn_shell_with_command(&vte, &wd, &cmd),
+                    None => terminal::spawn_shell(&vte, &wd),
+                }
                 has_child.set(true);
 
                 {
