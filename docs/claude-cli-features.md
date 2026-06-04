@@ -1,11 +1,122 @@
 # Claude CLI Integration — Feature Research
 
-> Based on Claude Code CLI v2.1.78.
-> Current spawn command: `claude -p --output-format stream-json --verbose --include-partial-messages --input-format stream-json --dangerously-skip-permissions`
+> Feature survey based on Claude Code CLI **v2.1.78**.
+> AskUserQuestion / control-protocol section verified on Claude Code CLI **v2.1.154** (2026-06-04).
+> Current spawn command: `claude -p --output-format stream-json --verbose --include-partial-messages --input-format stream-json --permission-prompt-tool stdio`
+> (Previously ended in `--dangerously-skip-permissions`; replaced — see the AskUserQuestion section.)
 
 ## Current State
 
-FlyCrys spawns a **fresh, stateless** `claude -p` process for each conversation. There is no session persistence, no model selection, and no way to configure MCP servers or permissions from the GUI. Every conversation starts from scratch and is lost when the process exits.
+FlyCrys spawns a **fresh, stateless** `claude -p` process for each conversation. There is no session persistence, no model selection, and no way to configure MCP servers from the GUI. Every conversation starts from scratch and is lost when the process exits.
+
+---
+
+## 0. AskUserQuestion via the stdio control protocol — IMPLEMENTED
+
+> **Status:** Implemented. **Verified on CLI v2.1.154** (2026-06-04). See the
+> regression checklist at the end of this section before bumping the CLI.
+
+### Problem
+
+`AskUserQuestion` (the tool Claude calls to ask the user a multiple-choice
+clarifying question, added in CLI v2.0.21) does **not** work as a plain tool in
+headless `-p` mode. When we ran with `--dangerously-skip-permissions`, the model
+emitted the `tool_use` and the CLI immediately produced its own error
+tool_result with the literal content **`"Answer questions?"`** (`is_error: true`),
+because there is no interactive TUI to render the selector. The model then gives
+up ("I've asked the question and am now waiting…") and ends the turn.
+
+### Mechanism (how the official SDK does it)
+
+`AskUserQuestion` is routed through the **SDK control protocol**, the same channel
+the Agent SDK's `canUseTool` callback uses for tool-permission prompts. Enabling
+it has two parts:
+
+1. **Spawn flag** `--permission-prompt-tool stdio` — routes permission /
+   AskUserQuestion decisions to the client over stdio instead of failing them.
+   (Discovered in `claude-agent-sdk-python`'s `subprocess_cli.py`; it is **not
+   listed in `claude --help`** on v2.1.154 but is accepted.)
+2. **Initialize handshake** — right after spawn, the client sends an `initialize`
+   control_request. The CLI acks with a `control_response` (carrying available
+   commands/skills, which we ignore).
+
+Then, for each tool needing a decision, the CLI sends a `can_use_tool`
+control_request and **blocks until we reply** with a `control_response`.
+
+### Verified wire format (v2.1.154)
+
+```jsonc
+// 1. client → CLI, immediately after spawn
+{"type":"control_request","request_id":"flycrys_init",
+ "request":{"subtype":"initialize","hooks":null}}
+
+// 2. CLI → client, for AskUserQuestion (and every non-allowlisted tool)
+{"type":"control_request","request_id":"<uuid>",
+ "request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion",
+   "tool_use_id":"toolu_…",
+   "input":{"questions":[{"question":"…","header":"…","multiSelect":false,
+     "options":[{"label":"…","description":"…"}]}]}}}
+
+// 3. client → CLI, answering (request_id MUST match #2)
+{"type":"control_response","response":{"subtype":"success","request_id":"<uuid>",
+ "response":{"behavior":"allow","updatedInput":{
+   "questions":[…echoed…],
+   "answers":{"<question text>":"<chosen label>"}}}}}
+
+// 4. CLI → client, the resulting clean tool_result (no more "Answer questions?")
+//   content: 'Your questions have been answered: "…"="Blue". You can now continue…'
+```
+
+- Multi-select answers: value is an **array** of labels (or a comma-joined string).
+- Deny instead of allow: `{"behavior":"deny","message":"…"}`.
+- Ordinary tools (Bash, Write, …) also arrive as `can_use_tool` once skip-permissions
+  is gone; we auto-`allow` them (see below).
+
+### FlyCrys implementation
+
+- **`services/cli/claude.rs`**
+  - Spawn: `--dangerously-skip-permissions` → `--permission-prompt-tool stdio`.
+  - stdin is now `Arc<Mutex<Option<ChildStdin>>>` (`SharedStdin`) because the
+    reader thread (auto-allow) and the GTK thread (messages, answers) both write.
+  - `spawn()` writes the `initialize` request before the first user message.
+  - New `ClaudeEvent::ControlRequest`; the reader thread handles it:
+    `AskUserQuestion` → emit `AgentDomainEvent::AskUserQuestion`; any other tool →
+    auto-`allow` immediately (preserves the old skip-permissions UX — **same
+    security posture**, just expressed via the protocol); unknown subtypes → error
+    reply so the CLI never blocks.
+  - `AgentBackend::answer_question(request_id, updated_input)` writes the
+    `control_response`.
+- **`chat_webview.rs`** — `appendQuestionCard()` JS renders an inline card
+  (radio/checkbox + Submit); submitting navigates to
+  `flycrys://answer-question?rid=…&data=<urlencoded {questions,answers}>`, which
+  the navigation policy intercepts and forwards via `set_on_answer_question`.
+- **`event_handler.rs`** — renders the card on `AskUserQuestion`; suppresses the
+  generic tool-call element and the tool_result for `AskUserQuestion` (the card is
+  the only UI).
+
+### Limitations / not yet done
+
+- No free-text "Other" option (protocol supports it via `answers[q]=<text>` or a
+  top-level `response` string) — options-only for now.
+- No timeout handling; the card waits indefinitely (the CLI blocks until answered).
+- `AskUserQuestion` is unavailable in subagents (Task tool) per Anthropic docs.
+- Tool-permission requests are blanket-allowed; there is no per-tool approval UI
+  yet (the plumbing now exists to add one — see §4).
+
+### Regression checklist for newer CLI versions
+
+When bumping the Claude CLI, re-run `/tmp/auq_probe2.py` (or equivalent) and verify:
+
+1. `--permission-prompt-tool stdio` is still accepted (it's undocumented in `--help`).
+2. `initialize` still acks with a `control_response`.
+3. `AskUserQuestion` still arrives as `control_request` / `subtype:"can_use_tool"`
+   (not a renamed subtype like `sdk_control_request`, and not back to an inline
+   `tool_use` that auto-fails).
+4. The answer shape is still `{"behavior":"allow","updatedInput":{questions,answers}}`
+   nested at `response.response`, correlated by top-level `request_id`.
+5. Answering yields a **success** tool_result (watch for a regression to the
+   `"Answer questions?"` error string).
+6. The question input schema is still `questions[].{question,header,options[].{label,description},multiSelect}`.
 
 ---
 
@@ -160,8 +271,12 @@ Related flags:
 - Useful for restricting the agent to read-only operations.
 
 ### Implementation Notes
-- In `-p` mode with `stream-json`, permission prompts don't make sense (no interactive stdin for approval). So the realistic options are: `bypassPermissions`, `acceptEdits`, `plan`, or `dontAsk` with tool lists.
-- Removing `--dangerously-skip-permissions` and using `--permission-mode auto` or `acceptEdits` would be a safety improvement.
+- **Update (v2.1.154):** the earlier claim that "permission prompts don't make sense
+  in `-p`/`stream-json`" is **wrong**. With `--permission-prompt-tool stdio` the CLI
+  routes each decision to us over the control protocol (see §0). We already removed
+  `--dangerously-skip-permissions` and currently auto-allow every request. A real
+  per-tool approval UI can now reuse the §0 `can_use_tool` plumbing (return
+  `{"behavior":"deny","message":…}` to block).
 
 ---
 

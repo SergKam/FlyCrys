@@ -60,6 +60,13 @@ pub enum AgentDomainEvent {
         status: String,
         output_file: Option<String>,
     },
+    /// The agent called `AskUserQuestion`. `input_json` is the tool input
+    /// (`{"questions":[…]}`); answer via `AgentBackend::answer_question` using
+    /// `request_id`.
+    AskUserQuestion {
+        request_id: String,
+        input_json: String,
+    },
     ProcessError(String),
 }
 
@@ -82,6 +89,15 @@ pub trait AgentBackend {
     ) -> Result<(), String>;
 
     fn send_message(&mut self, text: &str, images: &[ImageAttachment]) -> Result<(), String>;
+
+    /// Answer a pending `AskUserQuestion` control request. `updated_input` is the
+    /// tool input echoed back with an added `answers` map (question text → label).
+    fn answer_question(
+        &mut self,
+        request_id: &str,
+        updated_input: serde_json::Value,
+    ) -> Result<(), String>;
+
     fn pause(&mut self);
     fn resume(&mut self);
     fn stop(&mut self);

@@ -4,6 +4,8 @@ use std::rc::Rc;
 use webkit6::prelude::*;
 
 type LoadPrevCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+/// Callback for an answered AskUserQuestion card: (request_id, updated_input_json).
+type AnswerQuestionCb = Rc<RefCell<Option<Rc<dyn Fn(String, String)>>>>;
 
 use crate::services::platform;
 
@@ -97,6 +99,19 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; paddi
 /* User images */
 .user-images { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
 .user-images img { max-height: 120px; max-width: 160px; border-radius: 4px; object-fit: cover; }
+/* AskUserQuestion card */
+.question-card { align-self: stretch; border: 1px solid rgba(53,132,228,0.5); border-radius: 8px; padding: 10px 12px; background: rgba(53,132,228,0.08); }
+.question-card.answered { opacity: 0.6; }
+.question-card .q-block { margin-bottom: 12px; }
+.question-card .q-block:last-of-type { margin-bottom: 8px; }
+.question-card .q-header { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; margin-bottom: 2px; }
+.question-card .q-text { font-weight: 600; margin-bottom: 6px; }
+.question-card .q-option { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.question-card .q-option:hover { background: rgba(128,128,128,0.12); }
+.question-card .q-opt-label { font-weight: 500; }
+.question-card .q-opt-desc { opacity: 0.6; font-size: 0.9em; }
+.question-card .q-submit { margin-top: 4px; padding: 5px 14px; border: none; border-radius: 6px; background: #3584e4; color: #fff; font-size: 0.9em; cursor: pointer; }
+.question-card .q-submit:disabled { background: rgba(128,128,128,0.4); cursor: default; }
 "#;
 
 // ---------------------------------------------------------------------------
@@ -199,6 +214,77 @@ function toolComplete(id, isError) {
 function toolOutput(id, html) {
     var el = document.getElementById(id + '-output');
     if (el) { el.innerHTML = html; }
+}
+
+function appendQuestionCard(id, rid, questionsJson) {
+    var data = JSON.parse(questionsJson);
+    var questions = (data && data.questions) || [];
+    var card = document.createElement('div');
+    card.id = id;
+    card.className = 'msg question-card';
+
+    questions.forEach(function(q, qi) {
+        var block = document.createElement('div');
+        block.className = 'q-block';
+        if (q.header) {
+            var hdr = document.createElement('div');
+            hdr.className = 'q-header';
+            hdr.textContent = q.header;
+            block.appendChild(hdr);
+        }
+        var qt = document.createElement('div');
+        qt.className = 'q-text';
+        qt.textContent = q.question || '';
+        block.appendChild(qt);
+
+        (q.options || []).forEach(function(opt) {
+            var label = document.createElement('label');
+            label.className = 'q-option';
+            var inp = document.createElement('input');
+            inp.type = q.multiSelect ? 'checkbox' : 'radio';
+            inp.name = id + '_q' + qi;
+            inp.value = opt.label;
+            label.appendChild(inp);
+            var t = document.createElement('span');
+            t.className = 'q-opt-label';
+            t.textContent = opt.label;
+            label.appendChild(t);
+            if (opt.description) {
+                var d = document.createElement('span');
+                d.className = 'q-opt-desc';
+                d.textContent = ' — ' + opt.description;
+                label.appendChild(d);
+            }
+            block.appendChild(label);
+        });
+        card.appendChild(block);
+    });
+
+    var btn = document.createElement('button');
+    btn.className = 'q-submit';
+    btn.textContent = 'Submit';
+    btn.onclick = function() {
+        var answers = {};
+        questions.forEach(function(q, qi) {
+            var sel = card.querySelectorAll('input[name="' + id + '_q' + qi + '"]:checked');
+            if (q.multiSelect) {
+                var arr = [];
+                sel.forEach(function(s) { arr.push(s.value); });
+                if (arr.length > 0) answers[q.question] = arr;
+            } else if (sel.length > 0) {
+                answers[q.question] = sel[0].value;
+            }
+        });
+        var payload = { questions: questions, answers: answers };
+        btn.disabled = true;
+        card.classList.add('answered');
+        window.location.href = 'flycrys://answer-question?rid=' + encodeURIComponent(rid)
+            + '&data=' + encodeURIComponent(JSON.stringify(payload));
+    };
+    card.appendChild(btn);
+
+    document.getElementById('chat').appendChild(card);
+    scrollToBottom();
 }
 
 function appendSystemMsg(id, text) {
@@ -321,6 +407,8 @@ pub struct ChatWebView {
     ready: Rc<Cell<bool>>,
     /// Callback fired when the user clicks "Load previous messages".
     on_load_prev: LoadPrevCb,
+    /// Callback fired when the user submits an AskUserQuestion card.
+    on_answer_question: AnswerQuestionCb,
 }
 
 impl ChatWebView {
@@ -347,10 +435,12 @@ impl ChatWebView {
         webview.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
 
         let on_load_prev: LoadPrevCb = Rc::new(RefCell::new(None));
+        let on_answer_question: AnswerQuestionCb = Rc::new(RefCell::new(None));
 
         // --- Navigation policy: intercept custom URIs, open http(s) externally ---
         let open_file_cb = on_open_file.clone();
         let load_prev_cb = Rc::clone(&on_load_prev);
+        let answer_cb = Rc::clone(&on_answer_question);
         webview.connect_decide_policy(move |_wv, decision, decision_type| {
             if decision_type != webkit6::PolicyDecisionType::NavigationAction {
                 decision.ignore();
@@ -396,6 +486,28 @@ impl ChatWebView {
                 decision.ignore();
                 if let Some(ref cb) = *load_prev_cb.borrow() {
                     cb();
+                }
+                return true;
+            }
+
+            if uri.starts_with("flycrys://answer-question") {
+                decision.ignore();
+                // flycrys://answer-question?rid=<id>&data=<urlencoded updatedInput JSON>
+                let mut rid = String::new();
+                let mut data = String::new();
+                if let Some(query) = uri.split('?').nth(1) {
+                    for param in query.split('&') {
+                        if let Some(v) = param.strip_prefix("rid=") {
+                            rid = percent_decode(v);
+                        } else if let Some(v) = param.strip_prefix("data=") {
+                            data = percent_decode(v);
+                        }
+                    }
+                }
+                if !rid.is_empty()
+                    && let Some(ref cb) = *answer_cb.borrow()
+                {
+                    cb(rid, data);
                 }
                 return true;
             }
@@ -453,6 +565,7 @@ impl ChatWebView {
             pending_js,
             ready,
             on_load_prev,
+            on_answer_question,
         }
     }
 
@@ -613,6 +726,21 @@ impl ChatWebView {
     /// Register the callback for "Load previous messages" clicks.
     pub fn set_on_load_prev(&self, cb: Rc<dyn Fn()>) {
         *self.on_load_prev.borrow_mut() = Some(cb);
+    }
+
+    /// Register the callback for AskUserQuestion card submissions.
+    /// Args: (request_id, updated_input_json).
+    pub fn set_on_answer_question(&self, cb: Rc<dyn Fn(String, String)>) {
+        *self.on_answer_question.borrow_mut() = Some(cb);
+    }
+
+    /// Render an interactive AskUserQuestion card. `input_json` is the tool input
+    /// (`{"questions":[…]}`); `request_id` correlates the eventual control response.
+    pub fn append_question(&self, request_id: &str, input_json: &str) {
+        let id = self.next_id();
+        let erid = js_escape(request_id);
+        let edata = js_escape(input_json);
+        self.evaluate_js(&format!("appendQuestionCard('{id}', '{erid}', '{edata}');"));
     }
 
     // --- Internal helpers ---

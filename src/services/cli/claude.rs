@@ -2,7 +2,23 @@ use base64::{Engine as _, engine::general_purpose};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
+
+/// Shared, thread-safe handle to the child's stdin. Both the GTK thread
+/// (user messages, question answers) and the reader thread (auto-allowing
+/// tool-permission control requests) write to it, so it must be locked.
+type SharedStdin = Arc<Mutex<Option<ChildStdin>>>;
+
+/// Write a single newline-terminated line to the shared stdin and flush.
+fn write_line(stdin: &SharedStdin, line: &str) -> Result<(), String> {
+    let mut guard = stdin
+        .lock()
+        .map_err(|_| "stdin lock poisoned".to_string())?;
+    let s = guard.as_mut().ok_or("Process stdin not available")?;
+    writeln!(s, "{line}").map_err(|e| format!("{e}"))?;
+    s.flush().map_err(|e| format!("{e}"))?;
+    Ok(())
+}
 
 use crate::config::types::AgentOutcome;
 
@@ -55,8 +71,25 @@ pub enum ClaudeEvent {
     },
     #[serde(rename = "process_error")]
     ProcessError { message: String },
+    /// SDK control protocol request from the CLI (e.g. tool-permission /
+    /// AskUserQuestion routing via `--permission-prompt-tool stdio`).
+    #[serde(rename = "control_request")]
+    ControlRequest {
+        request_id: String,
+        request: ControlRequestPayload,
+    },
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct ControlRequestPayload {
+    pub subtype: String,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -429,6 +462,7 @@ fn create_pty_pair() -> Option<(OwnedFd, OwnedFd)> {
 fn spawn_reader<R: std::io::Read + Send + 'static>(
     reader: R,
     sender: mpsc::Sender<AgentDomainEvent>,
+    stdin: SharedStdin,
 ) {
     std::thread::spawn(move || {
         let reader = BufReader::new(reader);
@@ -437,6 +471,12 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
         for line in reader.lines() {
             match line {
                 Ok(line) if !line.is_empty() => match serde_json::from_str::<ClaudeEvent>(&line) {
+                    Ok(ClaudeEvent::ControlRequest {
+                        request_id,
+                        request,
+                    }) => {
+                        handle_control_request(request_id, request, &stdin, &sender);
+                    }
                     Ok(event) => {
                         translate_event(event, &mut active_block, &sender);
                     }
@@ -450,6 +490,56 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
             }
         }
     });
+}
+
+/// Handle an SDK control-protocol request arriving on stdout.
+///
+/// `AskUserQuestion` is forwarded to the UI (we answer it once the user picks).
+/// Every other tool-permission request is auto-allowed immediately, preserving
+/// the previous `--dangerously-skip-permissions` behavior. Unknown subtypes get
+/// an error reply so the CLI never blocks waiting on us.
+fn handle_control_request(
+    request_id: String,
+    payload: ControlRequestPayload,
+    stdin: &SharedStdin,
+    sender: &mpsc::Sender<AgentDomainEvent>,
+) {
+    if payload.subtype == "can_use_tool" {
+        let tool_name = payload.tool_name.clone().unwrap_or_default();
+        let input = payload.input.clone().unwrap_or(serde_json::Value::Null);
+
+        if tool_name == "AskUserQuestion" {
+            let input_json = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+            let _ = sender.send(AgentDomainEvent::AskUserQuestion {
+                request_id,
+                input_json,
+            });
+            // Response is deferred until the user answers (see `answer_question`).
+            return;
+        }
+
+        let resp = serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": { "behavior": "allow", "updatedInput": input },
+            }
+        });
+        let _ = write_line(stdin, &resp.to_string());
+    } else {
+        // We register no hooks or SDK-MCP servers, so other subtypes shouldn't
+        // occur. Reply with an error to avoid hanging the CLI if one does.
+        let resp = serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request_id,
+                "error": format!("unsupported control request subtype: {}", payload.subtype),
+            }
+        });
+        let _ = write_line(stdin, &resp.to_string());
+    }
 }
 
 fn spawn_stderr_reader<R: std::io::Read + Send + 'static>(
@@ -503,7 +593,7 @@ enum ProcessState {
 
 pub struct ClaudeBackend {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    stdin: SharedStdin,
     pid: Option<u32>,
     state: ProcessState,
 }
@@ -518,14 +608,17 @@ impl ClaudeBackend {
     pub fn new() -> Self {
         Self {
             child: None,
-            stdin: None,
+            stdin: Arc::new(Mutex::new(None)),
             pid: None,
             state: ProcessState::Idle,
         }
     }
 
     fn cleanup(&mut self) {
-        self.stdin = None;
+        // Dropping stdin closes the pipe so the child sees EOF.
+        if let Ok(mut guard) = self.stdin.lock() {
+            *guard = None;
+        }
         if let Some(ref mut child) = self.child {
             let _ = child.wait();
         }
@@ -559,7 +652,12 @@ impl AgentBackend for ClaudeBackend {
             .arg("--include-partial-messages")
             .arg("--input-format")
             .arg("stream-json")
-            .arg("--dangerously-skip-permissions")
+            // Route tool-permission and AskUserQuestion decisions to us over the
+            // stdio control protocol instead of bypassing them entirely. We
+            // auto-allow ordinary tools (matching the old skip-permissions
+            // behavior) and surface AskUserQuestion to the chat UI.
+            .arg("--permission-prompt-tool")
+            .arg("stdio")
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stderr(Stdio::piped());
@@ -589,7 +687,18 @@ impl AgentBackend for ClaudeBackend {
         match cmd.spawn() {
             Ok(mut child) => {
                 self.pid = Some(child.id());
-                self.stdin = child.stdin.take();
+                if let Ok(mut guard) = self.stdin.lock() {
+                    *guard = child.stdin.take();
+                }
+
+                // Initialize the control protocol so the CLI routes permission /
+                // AskUserQuestion requests to us instead of failing them headless.
+                let init = serde_json::json!({
+                    "type": "control_request",
+                    "request_id": "flycrys_init",
+                    "request": { "subtype": "initialize", "hooks": serde_json::Value::Null },
+                });
+                let _ = write_line(&self.stdin, &init.to_string());
 
                 // Capture stderr for error reporting
                 if let Some(stderr) = child.stderr.take() {
@@ -600,10 +709,10 @@ impl AgentBackend for ClaudeBackend {
                 self.state = ProcessState::Running;
 
                 if let Some(master) = pty_master {
-                    spawn_reader(std::fs::File::from(master), sender);
+                    spawn_reader(std::fs::File::from(master), sender, Arc::clone(&self.stdin));
                 } else {
                     let stdout = self.child.as_mut().unwrap().stdout.take().unwrap();
-                    spawn_reader(stdout, sender);
+                    spawn_reader(stdout, sender, Arc::clone(&self.stdin));
                 }
                 Ok(())
             }
@@ -612,9 +721,6 @@ impl AgentBackend for ClaudeBackend {
     }
 
     fn send_message(&mut self, text: &str, images: &[ImageAttachment]) -> Result<(), String> {
-        let Some(ref mut stdin) = self.stdin else {
-            return Err("Process stdin not available".to_string());
-        };
         let content = if images.is_empty() {
             serde_json::json!(text)
         } else {
@@ -644,9 +750,23 @@ impl AgentBackend for ClaudeBackend {
                 "content": content
             }
         });
-        writeln!(stdin, "{}", msg).map_err(|e| format!("{e}"))?;
-        stdin.flush().map_err(|e| format!("{e}"))?;
-        Ok(())
+        write_line(&self.stdin, &msg.to_string())
+    }
+
+    fn answer_question(
+        &mut self,
+        request_id: &str,
+        updated_input: serde_json::Value,
+    ) -> Result<(), String> {
+        let resp = serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": { "behavior": "allow", "updatedInput": updated_input },
+            }
+        });
+        write_line(&self.stdin, &resp.to_string())
     }
 
     fn pause(&mut self) {

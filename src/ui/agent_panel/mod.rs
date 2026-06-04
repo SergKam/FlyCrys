@@ -339,6 +339,22 @@ pub fn create_agent_panel(
             }));
     }
 
+    // --- AskUserQuestion answers via flycrys://answer-question ---
+    {
+        let state_ans = Rc::clone(&state);
+        state.borrow().chat.webview.set_on_answer_question(Rc::new(
+            move |request_id: String, data_json: String| {
+                let updated_input: serde_json::Value =
+                    serde_json::from_str(&data_json).unwrap_or(serde_json::Value::Null);
+                let mut s = state_ans.borrow_mut();
+                let _ = s
+                    .process
+                    .process
+                    .answer_question(&request_id, updated_input);
+            },
+        ));
+    }
+
     // (Agent selection and configure actions are registered in the action group below.)
 
     // (Attach image / file / folder picker actions are registered in the action group below.)
