@@ -49,6 +49,30 @@ pub fn spawn_shell(terminal: &vte4::Terminal, working_directory: &str) {
     );
 }
 
+/// Spawn the shell and run `command` immediately, then drop into an interactive
+/// shell so the tab stays usable after the command exits.
+///
+/// Unlike typing via `feed_child`, this runs the command as the shell's startup
+/// argument, so it can't be swallowed by the shell's TTY initialization (which
+/// happens with a freshly-spawned shell).
+pub fn spawn_shell_with_command(terminal: &vte4::Terminal, working_directory: &str, command: &str) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+    // `<command>; exec <shell>` — run it, then replace the process with a fresh
+    // interactive shell so the terminal remains usable when the command exits.
+    let script = format!("{command}; exec {shell}");
+    terminal.spawn_async(
+        vte4::PtyFlags::DEFAULT,
+        Some(working_directory),
+        &[shell.as_str(), "-c", script.as_str()],
+        &[] as &[&str],
+        glib::SpawnFlags::DEFAULT,
+        || {},
+        -1,
+        None::<&gtk::gio::Cancellable>,
+        |_result| {},
+    );
+}
+
 /// Send a `cd` command to the running shell inside the terminal.
 /// Uses feed_child to write to the PTY stdin, simulating user input.
 pub fn send_cd(terminal: &vte4::Terminal, directory: &str) {
