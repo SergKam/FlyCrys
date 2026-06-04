@@ -327,7 +327,7 @@ impl RunPanel {
 
         // Show the panel and switch to the new tab
         self.inner.container.set_visible(true);
-        self.inner.notebook.set_current_page(Some(page_num as u32));
+        self.inner.notebook.set_current_page(Some(page_num));
     }
 
     /// Called when a `task_notification` system event arrives — the task is
