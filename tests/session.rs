@@ -33,6 +33,39 @@ fn workspace_tab_label_root() {
 }
 
 #[test]
+fn workspace_tab_label_custom() {
+    let mut ws = WorkspaceConfig::new("/home/user/my-project");
+    ws.custom_tab_label = Some("Backend API".to_string());
+    assert_eq!(ws.tab_label(), "Backend API");
+
+    // Blank/whitespace custom label falls back to the folder basename.
+    ws.custom_tab_label = Some("   ".to_string());
+    assert_eq!(ws.tab_label(), "my-project");
+
+    ws.custom_tab_label = None;
+    assert_eq!(ws.tab_label(), "my-project");
+}
+
+#[test]
+fn workspace_config_custom_label_roundtrip() {
+    let mut ws = WorkspaceConfig::new("/home/user/test");
+    ws.custom_tab_label = Some("My Tab".to_string());
+    let json = serde_json::to_string(&ws).unwrap();
+    let back: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.custom_tab_label.as_deref(), Some("My Tab"));
+    assert_eq!(back.tab_label(), "My Tab");
+}
+
+#[test]
+fn workspace_config_legacy_without_custom_label() {
+    // Configs written before custom_tab_label existed must still load (→ None).
+    let json = r#"{"id":"x","working_directory":"/home/user/legacy"}"#;
+    let ws: WorkspaceConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(ws.custom_tab_label, None);
+    assert_eq!(ws.tab_label(), "legacy");
+}
+
+#[test]
 fn workspace_unique_ids() {
     let ws1 = WorkspaceConfig::new("/a");
     let ws2 = WorkspaceConfig::new("/b");

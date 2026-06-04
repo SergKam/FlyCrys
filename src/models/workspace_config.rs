@@ -26,6 +26,9 @@ pub struct RunTabConfig {
 pub struct WorkspaceConfig {
     pub id: String,
     pub working_directory: String,
+    /// User-chosen tab title. When `None`, the tab falls back to the directory
+    /// basename (see [`WorkspaceConfig::tab_label`]).
+    pub custom_tab_label: Option<String>,
     pub tree_pane_width: i32,
     pub editor_terminal_split: i32,
     pub agent_pane_width: i32,
@@ -47,6 +50,7 @@ impl WorkspaceConfig {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             working_directory: working_directory.to_string(),
+            custom_tab_label: None,
             tree_pane_width: TREE_PANE_DEFAULT_WIDTH,
             editor_terminal_split: EDITOR_TERMINAL_SPLIT_DEFAULT,
             agent_pane_width: AGENT_PANEL_MIN_WIDTH,
@@ -64,8 +68,14 @@ impl WorkspaceConfig {
         }
     }
 
-    /// Short label for the tab: directory basename
+    /// Short label for the tab: the user's custom title if set, else the
+    /// directory basename.
     pub fn tab_label(&self) -> String {
+        if let Some(label) = self.custom_tab_label.as_deref()
+            && !label.trim().is_empty()
+        {
+            return label.to_string();
+        }
         Path::new(&self.working_directory)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -81,6 +91,8 @@ impl WorkspaceConfig {
 struct WorkspaceConfigRaw {
     id: String,
     working_directory: String,
+    #[serde(default)]
+    custom_tab_label: Option<String>,
     #[serde(default = "default_tree_pane")]
     tree_pane_width: i32,
     #[serde(default = "default_split")]
@@ -151,6 +163,7 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
         Ok(WorkspaceConfig {
             id: raw.id,
             working_directory: raw.working_directory,
+            custom_tab_label: raw.custom_tab_label,
             tree_pane_width: raw.tree_pane_width,
             editor_terminal_split: raw.editor_terminal_split,
             agent_pane_width: raw.agent_pane_width,

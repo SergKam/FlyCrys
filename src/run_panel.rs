@@ -219,6 +219,26 @@ impl RunPanel {
         }
     }
 
+    /// Open a fresh shell tab and resume the given Claude session in it by
+    /// running `claude --resume <session_id>` in the workspace directory.
+    pub fn open_claude_session(&self, session_id: &str) {
+        self.inner.container.set_visible(true);
+        let page_idx = self.add_shell_tab(); // spawns a shell in the working dir
+        self.inner.notebook.set_current_page(Some(page_idx as u32));
+
+        let tabs = self.inner.tabs.borrow();
+        if let Some(tab) = tabs.get(page_idx)
+            && let TabKind::Shell { terminal, .. } = &tab.kind
+            && let Some(ref vte) = *terminal.borrow()
+        {
+            // Single-quote the id (it's a UUID, but stay safe) and run it.
+            let escaped = session_id.replace('\'', "'\\''");
+            let cmd = format!("claude --resume '{escaped}'\n");
+            vte.feed_child(cmd.as_bytes());
+            vte.grab_focus();
+        }
+    }
+
     /// Apply theme colors to all materialized terminals.
     pub fn apply_colors(&self, theme: Theme) {
         let tabs = self.inner.tabs.borrow();
