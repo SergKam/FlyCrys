@@ -64,6 +64,10 @@ npm install -g @anthropic-ai/claude-code
 
 ## Features
 
+![Find bar, tree-like search results, and an interactive question card](docs/screenshot-features.png)
+
+*v0.4.0 in action: the in-view find bar stepping through matches (1 of 6), file-search results carrying the full tree context menu ("Show in Tree"), and an interactive `AskUserQuestion` card answered inline.*
+
 ### Agent chat
 
 - Streaming markdown rendering (tables, code blocks, lists, blockquotes)
