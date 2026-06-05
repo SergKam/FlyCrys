@@ -68,6 +68,7 @@ npm install -g @anthropic-ai/claude-code
 
 - Streaming markdown rendering (tables, code blocks, lists, blockquotes)
 - Tool calls shown inline with spinners
+- Interactive multiple-choice questions answered with in-chat cards (Claude's `AskUserQuestion` tool)
 - Pause, resume, stop agent processes
 - Session resume across restarts
 - Agent profiles with custom system prompts, tools, and model selection
@@ -89,6 +90,7 @@ Discovers commands from `~/.claude/commands/`, `~/.claude/skills/`, project `.cl
 
 - Lazy-loading tree with system MIME-type icons
 - Toolbar: Collapse All, Search (filters across entire project)
+- Search results behave like the tree — single-click opens, double-click reveals in tree, right-click for the same menu plus "Show in Tree"
 - Live refresh via inotify watcher (preserves expand state)
 - Right-click: Copy Path, Add to Chat, Open Terminal Here, Open in Default App
 - Drag files onto agent input
@@ -98,7 +100,8 @@ Discovers commands from `~/.claude/commands/`, `~/.claude/skills/`, project `.cl
 ### Text viewer
 
 - Three-state mode: Source / Preview / Diff (segmented toggle)
-- Syntax highlighting for 25+ languages
+- Syntax highlighting for ~50 languages — every grammar syntect ships, plus bundled TypeScript/TSX, TOML, and Dockerfile
+- In-view find bar (Ctrl+F): incremental highlight-all, match counter, Enter / Shift+Enter to step through hits
 - Markdown preview in WebKitGTK
 - Image preview with scaling
 - Git diff with highlighting
@@ -117,12 +120,13 @@ Discovers commands from `~/.claude/commands/`, `~/.claude/skills/`, project `.cl
 
 ### Workspace
 
-- Multi-tab workspaces, one per project
+- Multi-tab workspaces, one per project (tabs on top)
+- Right-click a tab: Rename, Clone (forks the agent's Claude session via `--fork-session`), Open session in Claude CLI, Open folder in file manager
 - Session persistence: window size, pane positions, open files, agent sessions
 - Lazy tab loading: only the active tab builds at startup
 - Light/dark theme toggle
 - Desktop notifications when agents finish
-- Git branch in status bar (updates via inotify, not polling)
+- Status bar shows the git branch (live via inotify), Claude session id, and working directory — all selectable for copy
 
 ## Tech stack
 
