@@ -357,6 +357,19 @@ pub fn create_agent_panel(
         ));
     }
 
+    // --- AskUserQuestion "none of these" via flycrys://reject-question ---
+    {
+        let state_rej = Rc::clone(&state);
+        state
+            .borrow()
+            .chat
+            .webview
+            .set_on_reject_question(Rc::new(move |request_id: String| {
+                let mut s = state_rej.borrow_mut();
+                let _ = s.process.process.reject_question(&request_id);
+            }));
+    }
+
     // (Agent selection and configure actions are registered in the action group below.)
 
     // (Attach image / file / folder picker actions are registered in the action group below.)

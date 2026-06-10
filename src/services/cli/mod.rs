@@ -101,6 +101,11 @@ pub trait AgentBackend {
         updated_input: serde_json::Value,
     ) -> Result<(), String>;
 
+    /// Reject a pending `AskUserQuestion`: the user picked none of the offered
+    /// options and will describe what they want instead. Denies the control
+    /// request so the model stops asking and waits for the user's reply.
+    fn reject_question(&mut self, request_id: &str) -> Result<(), String>;
+
     fn pause(&mut self);
     fn resume(&mut self);
     fn stop(&mut self);
