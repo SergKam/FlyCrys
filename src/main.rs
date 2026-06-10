@@ -221,8 +221,19 @@ impl TabSlot {
         }
     }
 
-    /// Persist this tab's state to disk.
+    /// Persist this tab's state to disk synchronously. Use on shutdown, where
+    /// the write must complete before the process exits.
     fn save(&self) {
+        self.persist(false);
+    }
+
+    /// Persist for the periodic autosave: the chat-history write (potentially
+    /// multi-MB) goes to a background thread so the GTK main loop never stalls.
+    fn autosave(&self) {
+        self.persist(true);
+    }
+
+    fn persist(&self, background: bool) {
         if let Some(ref ws) = self.workspace {
             // Update run panel state into config before saving
             {
@@ -232,7 +243,19 @@ impl TabSlot {
                 cfg.terminal_visible = ws.run_panel.is_visible();
             }
             session::save_workspace_config(&ws.config.borrow());
-            session::save_chat_history(&ws.config.borrow().id, &ws.chat_history.borrow());
+            // Chat history is append-only, so only write when it actually grew —
+            // avoids re-serializing a multi-MB blob to disk every autosave tick.
+            let chat_len = ws.chat_history.borrow().len();
+            if chat_len != ws.last_saved_chat_len.get() {
+                let id = ws.config.borrow().id.clone();
+                let history = ws.chat_history.borrow();
+                if background {
+                    session::save_chat_history_async(&id, &history);
+                } else {
+                    session::save_chat_history(&id, &history);
+                }
+                ws.last_saved_chat_len.set(chat_len);
+            }
             // Save dirty terminal tab scrollbacks
             ws.run_panel.save_dirty_tabs();
         } else if let Some(ref config) = self.pending_config {
@@ -543,7 +566,7 @@ fn build_ui(app: &gtk::Application) {
                 let state = app_state.borrow();
                 session::save_app_config(&state.config);
                 for slot in &state.slots {
-                    slot.save();
+                    slot.autosave();
                 }
                 glib::ControlFlow::Continue
             },

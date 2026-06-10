@@ -11,6 +11,7 @@ pub mod chat_webview;
 pub mod file_entry;
 pub mod find_bar;
 pub mod git_panel;
+pub mod git_status;
 pub mod highlight;
 pub mod markdown;
 pub mod run_panel;

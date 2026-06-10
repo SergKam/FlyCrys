@@ -30,6 +30,9 @@ impl FileWatcher {
         current_file: Rc<RefCell<String>>,
         on_file_changed: Rc<dyn Fn()>,
         on_file_removed: Rc<dyn Fn()>,
+        // Called once per tick when any watched directory changed, so the
+        // workspace can kick off an (off-thread) git-status refresh.
+        on_tree_changed: Rc<dyn Fn()>,
     ) -> Option<Self> {
         let (tx, rx) = mpsc::channel::<Event>();
 
@@ -111,6 +114,11 @@ impl FileWatcher {
                         return glib::ControlFlow::Break;
                     }
                 }
+            }
+
+            if !changed_dirs.is_empty() {
+                // Worktree changed → refresh git status (coalesced, off-thread).
+                on_tree_changed();
             }
 
             for dir in &changed_dirs {

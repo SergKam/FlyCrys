@@ -344,31 +344,12 @@ fn build_search_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
-/// Refresh the git status snapshot and re-color all currently visible tree items.
+/// Walk the ListView's visible row widgets and apply git-status CSS classes from
+/// the shared [`GitTreeStatus`] snapshot, without triggering a full model rebuild.
 ///
-/// Called on a timer (every few seconds) from the workspace.  Updates the shared
-/// [`GitTreeStatus`] then walks the ListView's widget children to apply or
-/// remove CSS classes without triggering a full model rebuild.
-pub fn refresh_git_tree_status(
-    list_view: &gtk::ListView,
-    git_status: &GitTreeStatusRef,
-    working_dir: &Path,
-) {
-    // 1. Rebuild the status snapshot
-    let file_map = git_service::status_map(working_dir);
-    let dir_set = git_service::dirty_dirs(&file_map);
-    {
-        let mut gs = git_status.borrow_mut();
-        gs.files = file_map;
-        gs.dirs = dir_set;
-    }
-
-    // 2. Walk visible ListView children and repaint labels
-    repaint_visible_labels(list_view, git_status, working_dir);
-}
-
-/// Walk the ListView's visible row widgets and apply git-status CSS classes.
-fn repaint_visible_labels(
+/// Bounded by the number of *visible* rows, so it's cheap to run on the main
+/// thread. The snapshot itself is refreshed off-thread by [`crate::git_status`].
+pub(crate) fn repaint_visible_labels(
     list_view: &gtk::ListView,
     git_status: &GitTreeStatusRef,
     working_dir: &Path,
