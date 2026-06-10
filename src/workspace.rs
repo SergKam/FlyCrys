@@ -16,7 +16,7 @@ use crate::session::{self, WorkspaceConfig};
 use crate::ui::agent_panel;
 use crate::ui::agent_panel::state::{BackgroundTaskResultCb, TaskCompletedCb};
 use crate::watcher::FileWatcher;
-use crate::{find_bar, git_panel, highlight, textview, tree};
+use crate::{find_bar, git_panel, git_status, highlight, textview, tree};
 
 /// All the widgets for a single workspace tab
 pub struct Workspace {
@@ -24,6 +24,10 @@ pub struct Workspace {
     pub config: Rc<RefCell<WorkspaceConfig>>,
     pub tab_spinner: gtk::Spinner,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
+    /// Length of `chat_history` at the last autosave. Chat history is
+    /// append-only, so a length change is a faithful "dirty" signal — the
+    /// autosave skips the (potentially multi-MB) write when nothing was added.
+    pub last_saved_chat_len: Cell<usize>,
     pub run_panel: RunPanel,
     /// Called on theme change to re-highlight the current file.
     pub on_theme_rehighlight: Rc<dyn Fn(bool)>,
@@ -113,27 +117,21 @@ impl Workspace {
         let git_panel_rc: Option<Rc<RefCell<git_panel::GitPanel>>> =
             git_panel::GitPanel::new(&working_dir, Rc::clone(&on_open_file)).map(|gp| {
                 tp.container.append(&gp.container);
-                let rc = Rc::new(RefCell::new(gp));
-                git_panel::start_refresh_timer(&rc);
-                rc
+                Rc::new(RefCell::new(gp))
             });
 
-        // Git status coloring in the file tree (runs initial + periodic refresh)
-        {
-            let lv = tp.list_view.clone();
-            let gs = tp.git_status.clone();
-            let wd = working_dir.clone();
-            // Initial population
-            tree::refresh_git_tree_status(&lv, &gs, &wd);
-            // Periodic refresh on the same cadence as the git panel
-            glib::timeout_add_local(
-                std::time::Duration::from_secs(crate::config::constants::GIT_REFRESH_INTERVAL_SECS),
-                move || {
-                    tree::refresh_git_tree_status(&lv, &gs, &wd);
-                    glib::ControlFlow::Continue
-                },
-            );
-        }
+        // Off-thread, coalesced git-status refresh that feeds both the file-tree
+        // colorizer and the "Changes" panel from a single `git status` call —
+        // never blocking the UI. Installed only for git repos (`git_panel_rc` is
+        // `Some` iff this directory is a repo).
+        let git_status_ctrl = git_panel_rc.as_ref().map(|_| {
+            git_status::install(
+                &working_dir,
+                tp.list_view.clone(),
+                tp.git_status.clone(),
+                git_panel_rc.clone(),
+            )
+        });
 
         // Main horizontal split (tree+git | editor+terminal)
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -153,9 +151,11 @@ impl Workspace {
             &config.borrow().id,
         )));
 
-        let on_tool_result: Option<Rc<dyn Fn()>> = git_panel_rc.as_ref().map(|gp| {
-            let gp = Rc::clone(gp);
-            Rc::new(move || gp.borrow().refresh()) as Rc<dyn Fn()>
+        // After each tool result, refresh git status (off-thread) so edits the
+        // agent makes appear in the tree/panel without waiting for the backstop.
+        let on_tool_result: Option<Rc<dyn Fn()>> = git_status_ctrl.as_ref().map(|ctrl| {
+            let ctrl = ctrl.clone();
+            Rc::new(move || ctrl.trigger()) as Rc<dyn Fn()>
         });
 
         let (agent_name_label, token_label, cost_label) = create_status_labels();
@@ -278,6 +278,10 @@ impl Workspace {
             &token_label,
             &cost_label,
             &session_label,
+            git_status_ctrl.as_ref().map(|ctrl| {
+                let ctrl = ctrl.clone();
+                Rc::new(move || ctrl.trigger()) as Rc<dyn Fn()>
+            }),
         );
 
         // Root container
@@ -312,7 +316,15 @@ impl Workspace {
             on_open_file(path);
         }
 
-        // File-system watcher
+        // File-system watcher. Worktree changes also drive an off-thread git
+        // refresh so the tree/panel stay current as files are edited.
+        let on_tree_changed: Rc<dyn Fn()> = match &git_status_ctrl {
+            Some(ctrl) => {
+                let ctrl = ctrl.clone();
+                Rc::new(move || ctrl.trigger())
+            }
+            None => Rc::new(|| {}),
+        };
         let file_watcher = setup_file_watcher(
             &working_dir,
             tp.dir_stores,
@@ -321,6 +333,7 @@ impl Workspace {
             &tv,
             &tp.selection,
             &config,
+            on_tree_changed,
         );
 
         // Theme change callback
@@ -339,11 +352,14 @@ impl Workspace {
             })
         };
 
+        let last_saved_chat_len = Cell::new(chat_history.borrow().len());
+
         Workspace {
             root,
             config,
             tab_spinner,
             chat_history,
+            last_saved_chat_len,
             run_panel,
             on_theme_rehighlight,
             _file_watcher: file_watcher,
@@ -866,6 +882,9 @@ fn create_status_bar(
     token_label: &gtk::Label,
     cost_label: &gtk::Label,
     session_label: &gtk::Label,
+    // Called when `.git/HEAD` changes (branch switch / commit) so git status
+    // can be refreshed — a branch change rewrites which files look modified.
+    git_refresh: Option<Rc<dyn Fn()>>,
 ) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     bar.add_css_class("statusbar");
@@ -923,6 +942,10 @@ fn create_status_bar(
                             bl.set_text(&format!("git: {branch}"));
                         } else {
                             bl.set_text("");
+                        }
+                        // A branch switch / commit changes file status too.
+                        if let Some(ref refresh) = git_refresh {
+                            refresh();
                         }
                     }
                     glib::ControlFlow::Continue
@@ -1302,6 +1325,7 @@ fn wire_pane_position_tracking(
 
 // ── File watcher setup ───────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn setup_file_watcher(
     working_dir: &Path,
     dir_stores: tree::DirStoreMap,
@@ -1310,6 +1334,7 @@ fn setup_file_watcher(
     tv: &textview::TextViewPanel,
     selection: &gtk::SingleSelection,
     config: &Rc<RefCell<WorkspaceConfig>>,
+    on_tree_changed: Rc<dyn Fn()>,
 ) -> Option<FileWatcher> {
     let on_file_changed: Rc<dyn Fn()> = {
         let oof = Rc::clone(on_open_file);
@@ -1343,6 +1368,7 @@ fn setup_file_watcher(
         Rc::clone(current_file),
         on_file_changed,
         on_file_removed,
+        on_tree_changed,
     )
 }
 

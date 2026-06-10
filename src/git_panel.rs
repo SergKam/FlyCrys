@@ -1,11 +1,8 @@
-use gtk::glib;
 use gtk::prelude::*;
 use gtk4 as gtk;
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::config::constants::GIT_REFRESH_INTERVAL_SECS;
 use crate::services::git as git_service;
 
 pub struct GitPanel {
@@ -57,19 +54,21 @@ impl GitPanel {
         Some(panel)
     }
 
+    /// Refresh by running `git status` synchronously. Used once at construction;
+    /// steady-state refreshes go through [`GitPanel::render`] with a snapshot the
+    /// off-thread [`crate::git_status`] controller already computed.
     pub fn refresh(&self) {
+        let entries = git_service::status(&self.working_dir).unwrap_or_default();
+        self.render(&entries);
+    }
+
+    /// Re-render the panel from a pre-computed status snapshot (no git call), so
+    /// the panel and the file-tree colorizer can share one `git status` result.
+    pub fn render(&self, entries: &[git_service::GitStatusEntry]) {
         // Clear existing rows
         while let Some(child) = self.list_box.first_child() {
             self.list_box.remove(&child);
         }
-
-        let entries = match git_service::status(&self.working_dir) {
-            Ok(entries) => entries,
-            Err(_) => {
-                self.container.set_visible(false);
-                return;
-            }
-        };
 
         if entries.is_empty() {
             self.container.set_visible(false);
@@ -78,7 +77,7 @@ impl GitPanel {
 
         self.container.set_visible(true);
 
-        for entry in &entries {
+        for entry in entries {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             row.set_margin_start(8);
             row.set_margin_end(8);
@@ -132,18 +131,6 @@ impl GitPanel {
             self.list_box.append(&row);
         }
     }
-}
-
-/// Start a periodic refresh timer for the git panel.
-pub fn start_refresh_timer(panel: &Rc<RefCell<GitPanel>>) {
-    let panel = Rc::clone(panel);
-    glib::timeout_add_local(
-        std::time::Duration::from_secs(GIT_REFRESH_INTERVAL_SECS),
-        move || {
-            panel.borrow().refresh();
-            glib::ControlFlow::Continue
-        },
-    );
 }
 
 /// Check if a file has uncommitted git changes.

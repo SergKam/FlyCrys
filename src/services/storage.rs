@@ -86,12 +86,40 @@ fn chat_history_path(workspace_id: &str) -> PathBuf {
     sessions_dir().join(format!("{workspace_id}_chat.json"))
 }
 
+/// Persist chat history synchronously. Use on shutdown and wherever the write
+/// must be on disk before proceeding (the test suite relies on this).
 pub fn save_chat_history(workspace_id: &str, messages: &[ChatMessage]) {
-    let dir = sessions_dir();
-    let _ = fs::create_dir_all(&dir);
+    write_chat_history(chat_history_path(workspace_id), messages);
+}
+
+/// Like [`save_chat_history`] but does the (potentially multi-MB) serialize and
+/// disk write on a background thread, so periodic autosave never blocks the GTK
+/// main loop. Not for shutdown — the process may exit before the thread runs.
+pub fn save_chat_history_async(workspace_id: &str, messages: &[ChatMessage]) {
+    // Cloning the history is a cheap memcpy of the String buffers; the expensive
+    // serialize + write happen on the worker thread.
     let path = chat_history_path(workspace_id);
-    if let Ok(data) = serde_json::to_string(messages) {
-        let _ = fs::write(path, data);
+    let messages = messages.to_vec();
+    std::thread::spawn(move || write_chat_history(path, &messages));
+}
+
+/// Atomic write: serialize to a temp file, then rename over the target, so a
+/// crash mid-write can never leave a truncated / corrupt history file.
+fn write_chat_history(path: PathBuf, messages: &[ChatMessage]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    /// Disambiguates temp files if two writes overlap.
+    static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let _ = fs::create_dir_all(sessions_dir());
+    let Ok(data) = serde_json::to_string(messages) else {
+        return;
+    };
+    let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp.{seq}"));
+    if fs::write(&tmp, data).is_ok() {
+        let _ = fs::rename(&tmp, &path);
+    } else {
+        let _ = fs::remove_file(&tmp);
     }
 }
 

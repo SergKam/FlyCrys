@@ -129,13 +129,6 @@ pub fn is_file_modified(file_path: &str, working_dir: &Path) -> bool {
     }
 }
 
-/// Build a map of relative-path → git file status for the whole repo.
-/// Used by the file tree to color-code entries.
-pub fn status_map(working_dir: &Path) -> HashMap<String, GitFileStatus> {
-    let entries = status(working_dir).unwrap_or_default();
-    entries.into_iter().map(|e| (e.path, e.status)).collect()
-}
-
 /// Given a file status map, compute the set of relative directory paths that
 /// contain at least one changed file (recursively up to the repo root).
 pub fn dirty_dirs(file_map: &HashMap<String, GitFileStatus>) -> HashSet<String> {

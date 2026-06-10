@@ -2,7 +2,14 @@
 
 // --- Timing ---
 pub const AUTOSAVE_INTERVAL_SECS: u64 = 5;
-pub const GIT_REFRESH_INTERVAL_SECS: u64 = 5;
+/// Backstop interval for git-status refresh. Refresh is normally event-driven
+/// (worktree + `.git/HEAD` inotify watchers and tool-result callbacks); this
+/// slow poll only catches changes the watchers can't see — e.g. edits inside
+/// collapsed, unwatched subtrees.
+pub const GIT_REFRESH_BACKSTOP_SECS: u64 = 20;
+/// How often the main loop drains completed git-status results from the worker
+/// thread. A cheap `try_recv`; the blocking `git status` runs off-thread.
+pub const GIT_RESULT_POLL_MS: u64 = 200;
 pub const FILE_WATCHER_SYNC_MS: u64 = 200;
 
 // --- UI Dimensions ---
