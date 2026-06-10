@@ -213,13 +213,18 @@ impl Workspace {
                 ))
             };
 
+            let workspace_label: Rc<dyn Fn() -> String> = {
+                let cfg = Rc::clone(&config);
+                Rc::new(move || cfg.borrow().tab_label())
+            };
+
             agent_panel::create_agent_panel(
                 Rc::clone(&on_open_file),
                 Rc::clone(&theme),
                 Rc::clone(&notification_level),
                 tab_spinner.clone(),
                 &working_dir,
-                "Agent",
+                workspace_label,
                 agent_configs,
                 &profile,
                 session_id,
