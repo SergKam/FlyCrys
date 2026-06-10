@@ -6,6 +6,8 @@ use webkit6::prelude::*;
 type LoadPrevCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 /// Callback for an answered AskUserQuestion card: (request_id, updated_input_json).
 type AnswerQuestionCb = Rc<RefCell<Option<Rc<dyn Fn(String, String)>>>>;
+/// Callback for a rejected AskUserQuestion card ("none of these"): (request_id).
+type RejectQuestionCb = Rc<RefCell<Option<Rc<dyn Fn(String)>>>>;
 
 use crate::services::platform;
 
@@ -112,8 +114,12 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; paddi
 .question-card .q-opt-text { display: flex; flex-direction: column; gap: 2px; }
 .question-card .q-opt-label { font-weight: 500; }
 .question-card .q-opt-desc { opacity: 0.6; font-size: 0.9em; }
-.question-card .q-submit { margin-top: 4px; padding: 5px 14px; border: none; border-radius: 6px; background: #3584e4; color: #fff; font-size: 0.9em; cursor: pointer; }
+.question-card .q-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+.question-card .q-submit { padding: 5px 14px; border: none; border-radius: 6px; background: #3584e4; color: #fff; font-size: 0.9em; cursor: pointer; }
 .question-card .q-submit:disabled { background: rgba(128,128,128,0.4); cursor: default; }
+.question-card .q-reject { padding: 5px 12px; border: 1px solid rgba(128,128,128,0.5); border-radius: 6px; background: transparent; color: inherit; font-size: 0.9em; cursor: pointer; opacity: 0.85; }
+.question-card .q-reject:hover { opacity: 1; background: rgba(128,128,128,0.12); }
+.question-card .q-reject:disabled { opacity: 0.4; cursor: default; }
 "#;
 
 // ---------------------------------------------------------------------------
@@ -265,9 +271,17 @@ function appendQuestionCard(id, rid, questionsJson) {
         card.appendChild(block);
     });
 
+    var actions = document.createElement('div');
+    actions.className = 'q-actions';
+
     var btn = document.createElement('button');
     btn.className = 'q-submit';
     btn.textContent = 'Submit';
+
+    var reject = document.createElement('button');
+    reject.className = 'q-reject';
+    reject.textContent = "None of these — I'll explain";
+
     btn.onclick = function() {
         var answers = {};
         questions.forEach(function(q, qi) {
@@ -282,11 +296,22 @@ function appendQuestionCard(id, rid, questionsJson) {
         });
         var payload = { questions: questions, answers: answers };
         btn.disabled = true;
+        reject.disabled = true;
         card.classList.add('answered');
         window.location.href = 'flycrys://answer-question?rid=' + encodeURIComponent(rid)
             + '&data=' + encodeURIComponent(JSON.stringify(payload));
     };
-    card.appendChild(btn);
+
+    reject.onclick = function() {
+        btn.disabled = true;
+        reject.disabled = true;
+        card.classList.add('answered');
+        window.location.href = 'flycrys://reject-question?rid=' + encodeURIComponent(rid);
+    };
+
+    actions.appendChild(btn);
+    actions.appendChild(reject);
+    card.appendChild(actions);
 
     document.getElementById('chat').appendChild(card);
     scrollToBottom();
@@ -414,6 +439,8 @@ pub struct ChatWebView {
     on_load_prev: LoadPrevCb,
     /// Callback fired when the user submits an AskUserQuestion card.
     on_answer_question: AnswerQuestionCb,
+    /// Callback fired when the user rejects an AskUserQuestion card.
+    on_reject_question: RejectQuestionCb,
 }
 
 impl ChatWebView {
@@ -441,11 +468,13 @@ impl ChatWebView {
 
         let on_load_prev: LoadPrevCb = Rc::new(RefCell::new(None));
         let on_answer_question: AnswerQuestionCb = Rc::new(RefCell::new(None));
+        let on_reject_question: RejectQuestionCb = Rc::new(RefCell::new(None));
 
         // --- Navigation policy: intercept custom URIs, open http(s) externally ---
         let open_file_cb = on_open_file.clone();
         let load_prev_cb = Rc::clone(&on_load_prev);
         let answer_cb = Rc::clone(&on_answer_question);
+        let reject_cb = Rc::clone(&on_reject_question);
         webview.connect_decide_policy(move |_wv, decision, decision_type| {
             if decision_type != webkit6::PolicyDecisionType::NavigationAction {
                 decision.ignore();
@@ -517,6 +546,25 @@ impl ChatWebView {
                 return true;
             }
 
+            if uri.starts_with("flycrys://reject-question") {
+                decision.ignore();
+                // flycrys://reject-question?rid=<id> — user picked none of the options.
+                let mut rid = String::new();
+                if let Some(query) = uri.split('?').nth(1) {
+                    for param in query.split('&') {
+                        if let Some(v) = param.strip_prefix("rid=") {
+                            rid = percent_decode(v);
+                        }
+                    }
+                }
+                if !rid.is_empty()
+                    && let Some(ref cb) = *reject_cb.borrow()
+                {
+                    cb(rid);
+                }
+                return true;
+            }
+
             if uri.starts_with("http://") || uri.starts_with("https://") {
                 decision.ignore();
                 let _ = platform::open_in_browser(&uri);
@@ -571,6 +619,7 @@ impl ChatWebView {
             ready,
             on_load_prev,
             on_answer_question,
+            on_reject_question,
         }
     }
 
@@ -737,6 +786,12 @@ impl ChatWebView {
     /// Args: (request_id, updated_input_json).
     pub fn set_on_answer_question(&self, cb: Rc<dyn Fn(String, String)>) {
         *self.on_answer_question.borrow_mut() = Some(cb);
+    }
+
+    /// Register the callback for an AskUserQuestion card rejection ("none of
+    /// these"). Args: (request_id).
+    pub fn set_on_reject_question(&self, cb: Rc<dyn Fn(String)>) {
+        *self.on_reject_question.borrow_mut() = Some(cb);
     }
 
     /// Render an interactive AskUserQuestion card. `input_json` is the tool input

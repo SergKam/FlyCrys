@@ -773,6 +773,25 @@ impl AgentBackend for ClaudeBackend {
         write_line(&self.stdin, &resp.to_string())
     }
 
+    fn reject_question(&mut self, request_id: &str) -> Result<(), String> {
+        // Deny the AskUserQuestion permission with a directive message so the
+        // model doesn't re-ask and instead waits for the user to explain.
+        let resp = serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": {
+                    "behavior": "deny",
+                    "message": "The user did not choose any of the offered options and \
+                                will describe what they want in their next message. Do not \
+                                call AskUserQuestion again for this — wait for their reply.",
+                },
+            }
+        });
+        write_line(&self.stdin, &resp.to_string())
+    }
+
     fn pause(&mut self) {
         if let Some(pid) = self.pid
             && self.state == ProcessState::Running
