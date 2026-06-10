@@ -12,6 +12,20 @@ use crate::services::cli::AgentDomainEvent;
 use super::state::PanelState;
 use super::{extract_file_path, extract_tool_display, format_token_count};
 
+/// Fire a desktop notification (respecting the configured notification level)
+/// whose body is `<prefix> "<workspace dir name>"`. Used to alert the user when
+/// the agent finishes, errors, or needs an answer while the window is unfocused.
+fn notify_workspace(state: &PanelState, prefix: &str) {
+    if state.config.notification_level.get().is_enabled()
+        && let Some(app) = gio::Application::default()
+    {
+        let name = (state.workspace_label)();
+        let notification = gio::Notification::new("FlyCrys");
+        notification.set_body(Some(&format!("{prefix} \"{name}\"")));
+        app.send_notification(None, &notification);
+    }
+}
+
 /// Handle a single domain event from the agent backend.
 pub(crate) fn handle_domain_event(
     state: &Rc<RefCell<PanelState>>,
@@ -297,23 +311,14 @@ pub(crate) fn handle_domain_event(
             s.chat.current_text.clear();
 
             // Desktop notification
-            if s.config.notification_level.get().is_enabled()
-                && let Some(app) = gio::Application::default()
-            {
-                let dir_name = s
-                    .process
-                    .working_dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let notification = gio::Notification::new("FlyCrys");
+            notify_workspace(
+                &s,
                 if is_error {
-                    notification.set_body(Some(&format!("Agent error in {dir_name}")));
+                    "Agent error in"
                 } else {
-                    notification.set_body(Some(&format!("Agent finished in {dir_name}")));
-                }
-                app.send_notification(None, &notification);
-            }
+                    "Agent finished in"
+                },
+            );
 
             if let Some(ref cb) = s.on_tool_result {
                 cb();
@@ -330,6 +335,10 @@ pub(crate) fn handle_domain_event(
             remove_thinking(&mut s);
             s.chat.webview.append_question(&request_id, &input_json);
             s.chat.webview.scroll_to_bottom();
+
+            // Desktop notification — distinct from the "finished" message so the
+            // user knows the agent is blocked waiting on their answer.
+            notify_workspace(&s, "Agent needs your answer in");
         }
 
         AgentDomainEvent::TaskNotification {

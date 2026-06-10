@@ -67,6 +67,11 @@ pub(crate) struct PanelState {
     pub chat: ChatState,
     pub config: PanelConfig,
     pub tab_spinner: gtk::Spinner,
+    /// Returns the workspace's current display name (custom tab label if set,
+    /// else the directory basename). Used for desktop notification bodies, so it
+    /// must reflect renames — hence a getter over the shared config, not a
+    /// snapshot string.
+    pub workspace_label: Rc<dyn Fn() -> String>,
     #[allow(dead_code)]
     pub on_open_file: Rc<dyn Fn(&str)>,
     pub on_session_id_change: Rc<dyn Fn(Option<String>)>,
