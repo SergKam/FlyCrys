@@ -39,6 +39,16 @@ struct AttachedImage {
     texture: gtk::gdk::Texture,
 }
 
+/// What [`create_agent_panel`] hands back: the panel widget, the input text view,
+/// a theme-change callback, and a history-hydration callback (called once the
+/// persisted chat history has been parsed off-thread).
+type AgentPanelParts = (
+    gtk::Box,
+    gtk::TextView,
+    Rc<dyn Fn(bool)>,
+    Rc<dyn Fn(Vec<ChatMessage>)>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub fn create_agent_panel(
     on_open_file: Rc<dyn Fn(&str)>,
@@ -62,7 +72,7 @@ pub fn create_agent_panel(
     token_label: gtk::Label,
     cost_label: gtk::Label,
     agent_name_label: gtk::Label,
-) -> (gtk::Box, gtk::TextView, Rc<dyn Fn(bool)>) {
+) -> AgentPanelParts {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
     panel.set_width_request(AGENT_PANEL_MIN_WIDTH);
 
@@ -239,11 +249,9 @@ pub fn create_agent_panel(
     panel.append(&input_frame);
     panel.append(&toolbar);
 
-    // --- Compute first page boundaries ---
-    let total_history = chat_history.borrow().len();
-    let page_start = total_history.saturating_sub(PAGE_SIZE);
-
     // --- State ---
+    // History starts empty; it is parsed off-thread by the caller and handed to
+    // `load_history` (returned below) once ready, so the panel appears instantly.
     let state = Rc::new(RefCell::new(PanelState {
         process: AgentProcessState {
             process: ClaudeBackend::new(),
@@ -260,7 +268,7 @@ pub fn create_agent_panel(
         },
         chat: ChatState {
             webview,
-            oldest_rendered_idx: total_history, // nothing rendered yet
+            oldest_rendered_idx: 0, // populated by load_history once parsed
             current_streaming: false,
             current_stream_id: None,
             current_text: String::new(),
@@ -286,37 +294,50 @@ pub fn create_agent_panel(
         pending_background_tasks: std::collections::HashSet::new(),
     }));
 
-    // Show "Load previous" link if there are older entries
-    if page_start > 0 {
-        state.borrow().chat.webview.show_load_prev_button();
-    }
-
-    // --- Deferred first-page load (chunked across idle ticks) ---
-    {
-        let state_load = Rc::clone(&state);
-        // We commit to rendering page_start..total, so the oldest rendered index
-        // is page_start from the outset (keeps "Load previous" correct mid-load).
-        state.borrow_mut().chat.oldest_rendered_idx = page_start;
-        let mut cursor = page_start;
-        glib::idle_add_local(move || {
-            let s = state_load.borrow();
-            let history = s.chat.chat_history.borrow();
+    // --- Asynchronous history hydration ---
+    // The persisted chat history is parsed off the main thread by the caller and
+    // handed to this closure, which populates the shared buffer and renders the
+    // first page in chunks across idle ticks (so a long history streams in
+    // instead of freezing the panel on tab open).
+    let load_history: Rc<dyn Fn(Vec<ChatMessage>)> = {
+        let state = Rc::clone(&state);
+        Rc::new(move |history: Vec<ChatMessage>| {
             let total = history.len();
-            let dark = s.config.theme.get().is_dark();
-
-            let end = (cursor + HISTORY_RENDER_CHUNK).min(total);
-            for i in cursor..end {
-                chat_factory::render_history_message(&s.chat.webview, &history[i], dark);
+            let page_start = total.saturating_sub(PAGE_SIZE);
+            {
+                let mut s = state.borrow_mut();
+                *s.chat.chat_history.borrow_mut() = history;
+                // We commit to rendering page_start..total, so the oldest rendered
+                // index is page_start from the outset (keeps "Load previous"
+                // correct even while the first page is still streaming in).
+                s.chat.oldest_rendered_idx = page_start;
+                if page_start > 0 {
+                    s.chat.webview.show_load_prev_button();
+                }
             }
-            cursor = end;
 
-            if cursor >= total {
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
-    }
+            let state_render = Rc::clone(&state);
+            let mut cursor = page_start;
+            glib::idle_add_local(move || {
+                let s = state_render.borrow();
+                let history = s.chat.chat_history.borrow();
+                let total = history.len();
+                let dark = s.config.theme.get().is_dark();
+
+                let end = (cursor + HISTORY_RENDER_CHUNK).min(total);
+                for i in cursor..end {
+                    chat_factory::render_history_message(&s.chat.webview, &history[i], dark);
+                }
+                cursor = end;
+
+                if cursor >= total {
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            });
+        })
+    };
 
     // --- "Load previous" via flycrys://load-prev ---
     {
@@ -1001,7 +1022,7 @@ pub fn create_agent_panel(
         })
     };
 
-    (panel, input_view, on_theme_change)
+    (panel, input_view, on_theme_change, load_history)
 }
 
 // ---------------------------------------------------------------------------
