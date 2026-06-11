@@ -28,6 +28,11 @@ use state::{
 /// How many history entries to show initially / per "Load previous" click.
 const PAGE_SIZE: usize = 100;
 
+/// How many history messages to render per idle tick when first populating the
+/// chat. Spreading the work lets GTK interleave redraws/input between batches so
+/// the panel stays responsive instead of freezing while a long history renders.
+const HISTORY_RENDER_CHUNK: usize = 20;
+
 struct AttachedImage {
     bytes: Vec<u8>,
     mime_type: String,
@@ -286,21 +291,30 @@ pub fn create_agent_panel(
         state.borrow().chat.webview.show_load_prev_button();
     }
 
-    // --- Deferred first-page load ---
+    // --- Deferred first-page load (chunked across idle ticks) ---
     {
         let state_load = Rc::clone(&state);
-        glib::idle_add_local_once(move || {
-            let mut s = state_load.borrow_mut();
+        // We commit to rendering page_start..total, so the oldest rendered index
+        // is page_start from the outset (keeps "Load previous" correct mid-load).
+        state.borrow_mut().chat.oldest_rendered_idx = page_start;
+        let mut cursor = page_start;
+        glib::idle_add_local(move || {
+            let s = state_load.borrow();
             let history = s.chat.chat_history.borrow();
             let total = history.len();
             let dark = s.config.theme.get().is_dark();
 
-            for i in page_start..total {
+            let end = (cursor + HISTORY_RENDER_CHUNK).min(total);
+            for i in cursor..end {
                 chat_factory::render_history_message(&s.chat.webview, &history[i], dark);
             }
-            drop(history);
-            s.chat.oldest_rendered_idx = page_start;
-            drop(s);
+            cursor = end;
+
+            if cursor >= total {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     }
 
