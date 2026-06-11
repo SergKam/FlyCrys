@@ -27,7 +27,8 @@ pub struct Workspace {
     /// Length of `chat_history` at the last autosave. Chat history is
     /// append-only, so a length change is a faithful "dirty" signal — the
     /// autosave skips the (potentially multi-MB) write when nothing was added.
-    pub last_saved_chat_len: Cell<usize>,
+    /// Shared (`Rc`) so the off-thread history load can mark it as loaded.
+    pub last_saved_chat_len: Rc<Cell<usize>>,
     pub run_panel: RunPanel,
     /// Called on theme change to re-highlight the current file.
     pub on_theme_rehighlight: Rc<dyn Fn(bool)>,
@@ -147,9 +148,12 @@ impl Workspace {
 
         // Agent setup
         let agent_configs = session::list_agent_configs();
-        let chat_history = Rc::new(RefCell::new(session::load_chat_history(
-            &config.borrow().id,
-        )));
+        // History starts empty and is parsed off the main thread below, then
+        // injected once ready — so building the tab never blocks on a
+        // multi-megabyte chat-history JSON parse.
+        let chat_history: Rc<RefCell<Vec<session::ChatMessage>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let last_saved_chat_len = Rc::new(Cell::new(0usize));
 
         // After each tool result, refresh git status (off-thread) so edits the
         // agent makes appear in the tree/panel without waiting for the backstop.
@@ -171,7 +175,7 @@ impl Workspace {
             config.borrow().agent_1_session_id.as_deref(),
         );
 
-        let (agent_panel_1, agent_input_1, agent_on_theme_change) = {
+        let (agent_panel_1, agent_input_1, agent_on_theme_change, load_history) = {
             let profile = config.borrow().agent_1_profile.clone();
             let session_id = config.borrow().agent_1_session_id.clone();
             let fork_session = config.borrow().fork_session;
@@ -244,6 +248,32 @@ impl Workspace {
 
         // Fill the late-binding slot so "Add Selected to Chat" can reach the agent input
         *agent_input_slot.borrow_mut() = Some(agent_input_1.clone());
+
+        // Parse the persisted chat history off the main thread, then hand it to
+        // the panel once ready. Keeps the (multi-MB) JSON parse off the tab-build
+        // critical path; a short poll delivers the result back to the UI thread.
+        {
+            let id = config.borrow().id.clone();
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<session::ChatMessage>>();
+            std::thread::spawn(move || {
+                let _ = tx.send(session::load_chat_history(&id));
+            });
+            let load_history = Rc::clone(&load_history);
+            let last_saved = Rc::clone(&last_saved_chat_len);
+            glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
+                match rx.try_recv() {
+                    Ok(history) => {
+                        // Mark as already-persisted so the first autosave doesn't
+                        // rewrite the history we just loaded.
+                        last_saved.set(history.len());
+                        load_history(history);
+                        glib::ControlFlow::Break
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+                }
+            });
+        }
 
         // Wire chat button
         {
@@ -354,8 +384,6 @@ impl Workspace {
                 agent_on_theme_change(dark);
             })
         };
-
-        let last_saved_chat_len = Cell::new(chat_history.borrow().len());
 
         Workspace {
             root,
