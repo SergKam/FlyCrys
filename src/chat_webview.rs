@@ -127,7 +127,7 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; paddi
 // ---------------------------------------------------------------------------
 
 const BASE_JS: &str = r#"
-function appendUserMsg(id, textHtml, images) {
+function appendUserMsg(id, textHtml, images, force) {
     var d = document.createElement('div');
     d.id = id;
     d.className = 'msg user-msg';
@@ -143,7 +143,7 @@ function appendUserMsg(id, textHtml, images) {
         d.appendChild(ic);
     }
     document.getElementById('chat').appendChild(d);
-    scrollToBottom();
+    if (force) { forceScrollToBottom(); } else { scrollToBottom(); }
 }
 
 function beginStream(id) {
@@ -340,7 +340,27 @@ function removeElement(id) {
     if (el) el.remove();
 }
 
+// "Stick to bottom": only auto-scroll while the user is following the tail.
+// The moment they scroll up to read earlier messages we stop yanking them
+// down; we resume the instant they scroll back to the bottom.
+var stickToBottom = true;
+
+function nearBottom() {
+    // Within a few lines of the end still counts as "following".
+    return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 48);
+}
+
+window.addEventListener('scroll', function() {
+    stickToBottom = nearBottom();
+}, { passive: true });
+
 function scrollToBottom() {
+    if (stickToBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+function forceScrollToBottom() {
+    // Unconditional jump + re-engage follow (e.g. the user just sent a message).
+    stickToBottom = true;
     window.scrollTo(0, document.body.scrollHeight);
 }
 
@@ -633,7 +653,11 @@ impl ChatWebView {
     // --- Message API ---
 
     /// Append a right-aligned user message bubble, optionally with image thumbnails.
-    pub fn append_user_message(&self, text: &str, image_data_uris: &[String]) {
+    ///
+    /// `force_scroll` jumps to the bottom and re-engages auto-follow (a live
+    /// submit); pass `false` for history replay so a scrolled-up reader is not
+    /// yanked down.
+    pub fn append_user_message(&self, text: &str, image_data_uris: &[String], force_scroll: bool) {
         let id = self.next_id();
         let text_html = js_escape(text);
         let images_js = if image_data_uris.is_empty() {
@@ -645,8 +669,9 @@ impl ChatWebView {
                 .collect();
             format!("[{}]", items.join(","))
         };
+        let force = if force_scroll { "true" } else { "false" };
         self.evaluate_js(&format!(
-            "appendUserMsg('{id}', '{text_html}', {images_js});"
+            "appendUserMsg('{id}', '{text_html}', {images_js}, {force});"
         ));
     }
 

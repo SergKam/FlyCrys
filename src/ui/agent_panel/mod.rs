@@ -450,7 +450,7 @@ pub fn create_agent_panel(
                         format!("data:{};base64,{}", img.mime_type, b64)
                     })
                     .collect();
-                s.chat.webview.append_user_message(&text, &data_uris);
+                s.chat.webview.append_user_message(&text, &data_uris, true);
             }
 
             // Record in history

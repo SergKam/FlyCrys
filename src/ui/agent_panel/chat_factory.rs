@@ -34,7 +34,7 @@ fn inject_message(
                 let escaped = markdown::escape_html(text);
                 webview.prepend_html(&format!("<div class=\"msg user-msg\">{escaped}</div>"));
             } else {
-                webview.append_user_message(text, &[]);
+                webview.append_user_message(text, &[], false);
             }
         }
         ChatMessage::AssistantText { text } => {
