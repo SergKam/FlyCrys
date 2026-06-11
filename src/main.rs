@@ -76,6 +76,9 @@ struct TabSlot {
     pending_config: Option<WorkspaceConfig>,
     /// Set once the workspace has been constructed.
     workspace: Option<Workspace>,
+    /// True between scheduling the deferred build and its completion — prevents
+    /// a second switch to the same tab from kicking off a duplicate build.
+    materializing: bool,
 }
 
 impl TabSlot {
@@ -97,6 +100,7 @@ impl TabSlot {
             spinner,
             pending_config: None,
             workspace: Some(ws),
+            materializing: false,
         }
     }
 
@@ -112,23 +116,59 @@ impl TabSlot {
             spinner,
             pending_config: Some(config),
             workspace: None,
+            materializing: false,
         }
     }
 
     /// Build the workspace if it hasn't been built yet.
+    ///
+    /// `Workspace::new` is heavy (file tree, webview, chat-history parse, …) — a
+    /// few seconds on a big project. Running it inline in the `switch-page`
+    /// handler blocks GTK from even painting the tab change, so the window looks
+    /// frozen. Instead we show a lightweight placeholder immediately and build on
+    /// the next idle tick: GTK paints the switch first (redraw outranks idle),
+    /// then the real UI swaps in.
     fn materialize(
         &mut self,
+        app_state: Rc<RefCell<AppState>>,
         theme: Rc<Cell<Theme>>,
         notification_level: Rc<Cell<NotificationLevel>>,
     ) {
-        if self.workspace.is_some() {
+        if self.workspace.is_some() || self.materializing || self.pending_config.is_none() {
             return;
         }
-        if let Some(config) = self.pending_config.take() {
-            let ws = Workspace::new(config, theme, notification_level, self.spinner.clone());
-            self.wrapper.append(&ws.root);
-            self.workspace = Some(ws);
-        }
+        self.materializing = true;
+        self.wrapper.append(&build_loading_placeholder());
+
+        let wrapper = self.wrapper.clone();
+        let spinner = self.spinner.clone();
+        glib::idle_add_local_once(move || {
+            // Take the pending config under a short borrow, then build with the
+            // AppState borrow released (the build doesn't need it, and freeing it
+            // keeps the app re-entrant during the multi-second construction).
+            let config = {
+                let mut state = app_state.borrow_mut();
+                let Some(slot) = state.slots.iter_mut().find(|s| s.wrapper == wrapper) else {
+                    return;
+                };
+                match slot.pending_config.take() {
+                    Some(c) => c,
+                    None => return,
+                }
+            };
+
+            let ws = Workspace::new(config, theme, notification_level, spinner);
+
+            let mut state = app_state.borrow_mut();
+            if let Some(slot) = state.slots.iter_mut().find(|s| s.wrapper == wrapper) {
+                while let Some(child) = slot.wrapper.first_child() {
+                    slot.wrapper.remove(&child);
+                }
+                slot.wrapper.append(&ws.root);
+                slot.workspace = Some(ws);
+                slot.materializing = false;
+            }
+        });
     }
 
     fn workspace_id(&self) -> String {
@@ -263,6 +303,27 @@ impl TabSlot {
             session::save_workspace_config(config);
         }
     }
+}
+
+/// A centered spinner shown in a tab while its workspace is being built, so the
+/// tab switch is visible immediately instead of after the (multi-second) build.
+fn build_loading_placeholder() -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    container.set_vexpand(true);
+    container.set_hexpand(true);
+    container.set_valign(gtk::Align::Center);
+    container.set_halign(gtk::Align::Center);
+
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(32, 32);
+    spinner.start();
+    container.append(&spinner);
+
+    let label = gtk::Label::new(Some("Loading workspace\u{2026}"));
+    label.add_css_class("dim-label");
+    container.append(&label);
+
+    container
 }
 
 // ── App state ───────────────────────────────────────────────────────────
@@ -477,10 +538,15 @@ fn build_ui(app: &gtk::Application) {
         #[strong]
         notification_level,
         move |_nb, _page, page_num| {
+            let app_state_rc = Rc::clone(&app_state);
             let mut state = app_state.borrow_mut();
             state.config.active_tab = page_num as usize;
             if let Some(slot) = state.slots.get_mut(page_num as usize) {
-                slot.materialize(Rc::clone(&theme), Rc::clone(&notification_level));
+                slot.materialize(
+                    app_state_rc,
+                    Rc::clone(&theme),
+                    Rc::clone(&notification_level),
+                );
             }
         }
     ));

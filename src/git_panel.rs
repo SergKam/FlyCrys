@@ -50,16 +50,10 @@ impl GitPanel {
             list_box,
             on_open_file,
         };
-        panel.refresh();
+        // Start hidden; the off-thread git-status controller populates it shortly
+        // after the workspace is built (no blocking `git status` at construction).
+        panel.render(&[]);
         Some(panel)
-    }
-
-    /// Refresh by running `git status` synchronously. Used once at construction;
-    /// steady-state refreshes go through [`GitPanel::render`] with a snapshot the
-    /// off-thread [`crate::git_status`] controller already computed.
-    pub fn refresh(&self) {
-        let entries = git_service::status(&self.working_dir).unwrap_or_default();
-        self.render(&entries);
     }
 
     /// Re-render the panel from a pre-computed status snapshot (no git call), so

@@ -310,10 +310,13 @@ impl Workspace {
         // Autosave pane positions
         wire_pane_position_tracking(&paned, &outer_paned, &right_paned, &config);
 
-        // Load initial file if restored from session
+        // Load the restored file on the next idle tick, not inline: opening (and
+        // syntax-highlighting) a large file is slow, and doing it here would block
+        // the workspace from appearing. The empty editor shows first, then fills.
         let initial_file = config.borrow().open_file.clone();
-        if let Some(ref path) = initial_file {
-            on_open_file(path);
+        if let Some(path) = initial_file {
+            let oof = Rc::clone(&on_open_file);
+            glib::idle_add_local_once(move || oof(&path));
         }
 
         // File-system watcher. Worktree changes also drive an off-thread git
