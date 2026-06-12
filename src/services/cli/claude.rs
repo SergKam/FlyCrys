@@ -674,6 +674,9 @@ impl AgentBackend for ClaudeBackend {
         if let Some(ref model) = config.model {
             cmd.arg("--model").arg(model);
         }
+        if let Some(ref effort) = config.effort {
+            cmd.arg("--effort").arg(effort);
+        }
         if let Some(ref session_id) = config.resume_session_id {
             cmd.arg("--resume").arg(session_id);
             // Branch into a fresh session instead of continuing this one.

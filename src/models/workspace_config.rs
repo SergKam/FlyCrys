@@ -36,6 +36,12 @@ pub struct WorkspaceConfig {
     pub terminal_visible: bool,
     pub agent_1_profile: String,
     pub agent_1_session_id: Option<String>,
+    /// Session-level model override chosen via the toolbar switcher (the CLI
+    /// model `value`, e.g. `sonnet`). `None` falls back to the agent profile's
+    /// model / the CLI default. Validated against the fetched model list on load.
+    pub model_override: Option<String>,
+    /// Session-level reasoning effort (`--effort`). `None` lets the CLI decide.
+    pub effort: Option<String>,
     /// When true, the next agent spawn forks `agent_1_session_id` into a new
     /// session (`--resume <id> --fork-session`) instead of resuming it. Set by
     /// "Clone workspace"; cleared once a (forked) session id is reported.
@@ -62,6 +68,8 @@ impl WorkspaceConfig {
             terminal_visible: false,
             agent_1_profile: default_profile(),
             agent_1_session_id: None,
+            model_override: None,
+            effort: None,
             fork_session: false,
             panel_mode: PanelMode::default(),
             run_tabs: vec![RunTabConfig {
@@ -112,6 +120,10 @@ struct WorkspaceConfigRaw {
     agent_1_profile: String,
     #[serde(default)]
     agent_1_session_id: Option<String>,
+    #[serde(default)]
+    model_override: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
     #[serde(default)]
     fork_session: bool,
 
@@ -178,6 +190,8 @@ impl<'de> Deserialize<'de> for WorkspaceConfig {
             terminal_visible: raw.terminal_visible,
             agent_1_profile: raw.agent_1_profile,
             agent_1_session_id: raw.agent_1_session_id,
+            model_override: raw.model_override,
+            effort: raw.effort,
             fork_session: raw.fork_session,
             panel_mode,
             run_tabs,
