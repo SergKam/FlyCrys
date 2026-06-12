@@ -66,10 +66,6 @@ pub(crate) struct PanelConfig {
     pub effort: Option<String>,
     /// Selectable models fetched from the CLI; drives the switcher menu.
     pub models: Vec<ModelInfo>,
-    /// The model the CLI actually resolved for the running session, reported by
-    /// the `Started` event (e.g. `claude-opus-4-8[1m]`). Ground truth for the
-    /// status bar; `None` until the first turn runs.
-    pub active_model: Option<String>,
 }
 
 /// Top-level panel state — composes focused sub-structs.
