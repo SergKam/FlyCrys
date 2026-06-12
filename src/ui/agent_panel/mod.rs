@@ -155,6 +155,7 @@ pub fn create_agent_panel(
     );
     model_status_label.set_text(&model_effort_status(
         &[],
+        None,
         initial_model.as_deref(),
         initial_effort.as_deref(),
     ));
@@ -318,7 +319,9 @@ pub fn create_agent_panel(
             model_override: initial_model,
             effort: initial_effort,
             models: Vec::new(),
+            active_model: None,
         },
+        model_status_label: model_status_label.clone(),
         tab_spinner,
         workspace_label,
         on_open_file,
@@ -982,14 +985,16 @@ pub fn create_agent_panel(
                 gio::SimpleAction::new("model-select", Some(glib::VariantTy::STRING));
             let state_ref = Rc::clone(&state);
             let mm = model_menu.clone();
-            let msl = model_status_label.clone();
             model_action.connect_activate(move |_, param| {
                 let Some(value) = param.and_then(|p| p.get::<String>()) else {
                     return;
                 };
-                let (model, effort) = {
+                {
                     let mut s = state_ref.borrow_mut();
                     s.config.model_override = Some(value.clone());
+                    // The previous turn's resolved model no longer applies — show
+                    // the new selection until the next turn reports its actual model.
+                    s.config.active_model = None;
                     // Drop an effort the newly selected model doesn't support.
                     let keep_effort = s
                         .config
@@ -1003,9 +1008,8 @@ pub fn create_agent_panel(
                     if !keep_effort {
                         s.config.effort = None;
                     }
-                    (s.config.model_override.clone(), s.config.effort.clone())
-                };
-                apply_model_effort(&state_ref, &mm, &msl, model, effort);
+                }
+                apply_model_effort(&state_ref, &mm);
             });
             action_group.add_action(&model_action);
 
@@ -1013,15 +1017,13 @@ pub fn create_agent_panel(
                 gio::SimpleAction::new("effort-select", Some(glib::VariantTy::STRING));
             let state_ref = Rc::clone(&state);
             let mm = model_menu.clone();
-            let msl = model_status_label.clone();
             effort_action.connect_activate(move |_, param| {
                 let level = param.and_then(|p| p.get::<String>()).unwrap_or_default();
-                let (model, effort) = {
+                {
                     let mut s = state_ref.borrow_mut();
                     s.config.effort = if level.is_empty() { None } else { Some(level) };
-                    (s.config.model_override.clone(), s.config.effort.clone())
-                };
-                apply_model_effort(&state_ref, &mm, &msl, model, effort);
+                }
+                apply_model_effort(&state_ref, &mm);
             });
             action_group.add_action(&effort_action);
         }
@@ -1126,9 +1128,8 @@ pub fn create_agent_panel(
     let set_models: Rc<dyn Fn(Vec<ModelInfo>)> = {
         let state = Rc::clone(&state);
         let model_menu = model_menu.clone();
-        let model_status_label = model_status_label.clone();
         Rc::new(move |models: Vec<ModelInfo>| {
-            let (model, effort) = {
+            {
                 let mut s = state.borrow_mut();
                 s.config.models = models;
                 // Drop an override no longer in the list.
@@ -1137,24 +1138,22 @@ pub fn create_agent_panel(
                 {
                     s.config.model_override = None;
                 }
-                // Keep effort only if the selected model supports it.
-                let keep_effort = match (&s.config.model_override, &s.config.effort) {
-                    (Some(v), Some(e)) => s
-                        .config
-                        .models
-                        .iter()
-                        .find(|m| &m.value == v)
-                        .is_some_and(|m| {
-                            m.supports_effort && m.supported_effort_levels.contains(e)
-                        }),
-                    _ => s.config.effort.is_none(),
+                // Keep effort only if the effective model supports it.
+                let keep_effort = match s.config.effort.clone() {
+                    Some(e) => {
+                        effective_model_value(&s.config.models, s.config.model_override.as_deref())
+                            .and_then(|v| s.config.models.iter().find(|m| m.value == v))
+                            .is_some_and(|m| {
+                                m.supports_effort && m.supported_effort_levels.contains(&e)
+                            })
+                    }
+                    None => true,
                 };
                 if !keep_effort {
                     s.config.effort = None;
                 }
-                (s.config.model_override.clone(), s.config.effort.clone())
-            };
-            apply_model_effort(&state, &model_menu, &model_status_label, model, effort);
+            }
+            apply_model_effort(&state, &model_menu);
         })
     };
 
@@ -1162,43 +1161,83 @@ pub fn create_agent_panel(
 }
 
 /// Persist the chosen model/effort to the workspace config, then refresh the
-/// switcher menu and status label from the current model list.
-fn apply_model_effort(
-    state: &Rc<RefCell<PanelState>>,
-    menu: &gio::Menu,
-    status_label: &gtk::Label,
-    model: Option<String>,
-    effort: Option<String>,
-) {
-    let cb = Rc::clone(&state.borrow().on_model_effort_change);
-    cb(model.clone(), effort.clone());
+/// switcher menu and status label from current state.
+fn apply_model_effort(state: &Rc<RefCell<PanelState>>, menu: &gio::Menu) {
+    let (cb, model, effort) = {
+        let s = state.borrow();
+        (
+            Rc::clone(&s.on_model_effort_change),
+            s.config.model_override.clone(),
+            s.config.effort.clone(),
+        )
+    };
+    cb(model, effort);
     let s = state.borrow();
-    rebuild_model_menu(menu, &s.config.models, model.as_deref(), effort.as_deref());
-    status_label.set_text(&model_effort_status(
+    rebuild_model_menu(
+        menu,
         &s.config.models,
-        model.as_deref(),
-        effort.as_deref(),
+        s.config.model_override.as_deref(),
+        s.config.effort.as_deref(),
+    );
+    update_model_status(&s);
+}
+
+/// Set the model status-bar label from current state (actual model · effort).
+pub(super) fn update_model_status(s: &PanelState) {
+    s.model_status_label.set_text(&model_effort_status(
+        &s.config.models,
+        s.config.active_model.as_deref(),
+        s.config.model_override.as_deref(),
+        s.config.effort.as_deref(),
     ));
 }
 
+/// The model whose effort levels / checkmark apply: the explicit override (if
+/// still offered), else the CLI `default` entry, else the first model. Lets the
+/// effort section and a check appear even when nothing is explicitly picked.
+fn effective_model_value<'a>(
+    models: &'a [ModelInfo],
+    model_override: Option<&str>,
+) -> Option<&'a str> {
+    // Prefer the explicit override if it's still offered; resolve every result
+    // to a string borrowed from `models` (not from `model_override`).
+    if let Some(v) = model_override
+        && let Some(m) = models.iter().find(|m| m.value == v)
+    {
+        return Some(m.value.as_str());
+    }
+    models
+        .iter()
+        .find(|m| m.value == "default")
+        .or_else(|| models.first())
+        .map(|m| m.value.as_str())
+}
+
+/// Strip the context-window suffix (`[1m]`) from a resolved model id for display.
+fn clean_model_id(id: &str) -> &str {
+    id.split('[').next().unwrap_or(id)
+}
+
 /// Rebuild the switcher menu: a Model section (the fetched list) and an Effort
-/// section (the selected model's `supported_effort_levels`, plus "Default").
-/// Selected entries are marked with a check. Empty list → a "Fetching…" hint.
+/// section (the effective model's `supported_effort_levels`, plus "Default").
+/// The effective model is checked. Empty list → a "Fetching…" hint.
 fn rebuild_model_menu(
     menu: &gio::Menu,
     models: &[ModelInfo],
-    selected_model: Option<&str>,
+    model_override: Option<&str>,
     effort: Option<&str>,
 ) {
     use gtk::glib::prelude::ToVariant;
     menu.remove_all();
+
+    let effective = effective_model_value(models, model_override);
 
     let model_section = gio::Menu::new();
     if models.is_empty() {
         model_section.append_item(&gio::MenuItem::new(Some("Fetching models\u{2026}"), None));
     } else {
         for m in models {
-            let label = if selected_model == Some(m.value.as_str()) {
+            let label = if effective == Some(m.value.as_str()) {
                 format!("\u{2714} {}", m.display_name)
             } else {
                 format!("   {}", m.display_name)
@@ -1213,9 +1252,9 @@ fn rebuild_model_menu(
     }
     menu.append_section(Some("Model"), &model_section);
 
-    // Effort levels are model-specific; only show the section for a selected
-    // model that supports effort.
-    let levels: &[String] = selected_model
+    // Effort levels are model-specific; show the section for the effective
+    // model when it supports effort.
+    let levels: &[String] = effective
         .and_then(|v| models.iter().find(|m| m.value == v))
         .filter(|m| m.supports_effort)
         .map(|m| m.supported_effort_levels.as_slice())
@@ -1245,20 +1284,25 @@ fn rebuild_model_menu(
     }
 }
 
-/// Status-bar text for the effective model · effort, e.g. "Sonnet · high".
-/// `None` model override reads as "Default" (CLI / agent-profile default).
+/// Status-bar text for the model · effort, e.g. "claude-opus-4-8 · high".
+/// Prefers the model the CLI actually resolved (`active_model`); before the
+/// first turn, falls back to the effective selection's display name.
 fn model_effort_status(
     models: &[ModelInfo],
+    active_model: Option<&str>,
     model_override: Option<&str>,
     effort: Option<&str>,
 ) -> String {
-    let model_name = match model_override {
-        Some(v) => models
-            .iter()
-            .find(|m| m.value == v)
-            .map(|m| m.display_name.clone())
-            .unwrap_or_else(|| v.to_string()),
-        None => "Default".to_string(),
+    let model_name = match active_model.filter(|a| !a.is_empty()) {
+        Some(a) => clean_model_id(a).to_string(),
+        None => match effective_model_value(models, model_override) {
+            Some(v) => models
+                .iter()
+                .find(|m| m.value == v)
+                .map(|m| m.display_name.clone())
+                .unwrap_or_else(|| v.to_string()),
+            None => model_override.unwrap_or("Default").to_string(),
+        },
     };
     match effort {
         Some(e) => format!("{model_name} \u{00b7} {e}"),

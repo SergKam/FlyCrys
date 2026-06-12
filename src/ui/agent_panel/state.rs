@@ -66,6 +66,10 @@ pub(crate) struct PanelConfig {
     pub effort: Option<String>,
     /// Selectable models fetched from the CLI; drives the switcher menu.
     pub models: Vec<ModelInfo>,
+    /// The model the CLI actually resolved for the running session, reported by
+    /// the `Started` event (e.g. `claude-opus-4-8[1m]`). Ground truth for the
+    /// status bar; `None` until the first turn runs.
+    pub active_model: Option<String>,
 }
 
 /// Top-level panel state — composes focused sub-structs.
@@ -74,6 +78,9 @@ pub(crate) struct PanelState {
     pub tokens: TokenState,
     pub chat: ChatState,
     pub config: PanelConfig,
+    /// Status-bar label showing the effective model · effort. Updated from menu
+    /// actions, the model probe, and the `Started` event.
+    pub model_status_label: gtk::Label,
     pub tab_spinner: gtk::Spinner,
     /// Returns the workspace's current display name (custom tab label if set,
     /// else the directory basename). Used for desktop notification bodies, so it
