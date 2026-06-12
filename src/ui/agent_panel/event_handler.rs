@@ -37,7 +37,7 @@ pub(crate) fn handle_domain_event(
     match event {
         AgentDomainEvent::Started {
             session_id,
-            model,
+            model: _,
             context_window,
         } => {
             let mut s = state.borrow_mut();
@@ -50,12 +50,6 @@ pub(crate) fn handle_domain_event(
             }
             if let Some(ctx) = context_window {
                 s.tokens.context_window_max = ctx;
-            }
-            // The CLI reports the model it actually resolved — surface it in the
-            // status bar so the user sees what's really running.
-            if !model.is_empty() {
-                s.config.active_model = Some(model);
-                super::update_model_status(&s);
             }
         }
 

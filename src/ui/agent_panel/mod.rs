@@ -155,7 +155,6 @@ pub fn create_agent_panel(
     );
     model_status_label.set_text(&model_effort_status(
         &[],
-        None,
         initial_model.as_deref(),
         initial_effort.as_deref(),
     ));
@@ -319,7 +318,6 @@ pub fn create_agent_panel(
             model_override: initial_model,
             effort: initial_effort,
             models: Vec::new(),
-            active_model: None,
         },
         model_status_label: model_status_label.clone(),
         tab_spinner,
@@ -992,9 +990,6 @@ pub fn create_agent_panel(
                 {
                     let mut s = state_ref.borrow_mut();
                     s.config.model_override = Some(value.clone());
-                    // The previous turn's resolved model no longer applies — show
-                    // the new selection until the next turn reports its actual model.
-                    s.config.active_model = None;
                     // Drop an effort the newly selected model doesn't support.
                     let keep_effort = s
                         .config
@@ -1182,11 +1177,10 @@ fn apply_model_effort(state: &Rc<RefCell<PanelState>>, menu: &gio::Menu) {
     update_model_status(&s);
 }
 
-/// Set the model status-bar label from current state (actual model · effort).
-pub(super) fn update_model_status(s: &PanelState) {
+/// Set the model status-bar label from current state (model · effort).
+fn update_model_status(s: &PanelState) {
     s.model_status_label.set_text(&model_effort_status(
         &s.config.models,
-        s.config.active_model.as_deref(),
         s.config.model_override.as_deref(),
         s.config.effort.as_deref(),
     ));
@@ -1213,9 +1207,20 @@ fn effective_model_value<'a>(
         .map(|m| m.value.as_str())
 }
 
-/// Strip the context-window suffix (`[1m]`) from a resolved model id for display.
-fn clean_model_id(id: &str) -> &str {
-    id.split('[').next().unwrap_or(id)
+/// A concise model name from the CLI's own description (e.g. "Opus 4.8" from
+/// "Opus 4.8 with 1M context · Best for everyday, complex tasks"), so the actual
+/// model is visible before the first message. Falls back to display name, then
+/// the raw value. Reads CLI-provided text — does not transform model ids.
+fn model_label_text(m: &ModelInfo) -> String {
+    let lead = m.description.split('\u{00b7}').next().unwrap_or("").trim();
+    let lead = lead.split(" with ").next().unwrap_or(lead).trim();
+    if !lead.is_empty() {
+        lead.to_string()
+    } else if !m.display_name.is_empty() {
+        m.display_name.clone()
+    } else {
+        m.value.clone()
+    }
 }
 
 /// Rebuild the switcher menu: a Model section (the fetched list) and an Effort
@@ -1284,30 +1289,24 @@ fn rebuild_model_menu(
     }
 }
 
-/// Status-bar text for the model · effort, e.g. "claude-opus-4-8 · high".
-/// Prefers the model the CLI actually resolved (`active_model`); before the
-/// first turn, falls back to the effective selection's display name.
+/// Status-bar text "model · effort", e.g. "Opus 4.8 · high". The model name is
+/// the effective model's CLI description (known before the first message);
+/// effort shows the chosen level or "default" when unset. Both are visible up
+/// front without running a turn.
 fn model_effort_status(
     models: &[ModelInfo],
-    active_model: Option<&str>,
     model_override: Option<&str>,
     effort: Option<&str>,
 ) -> String {
-    let model_name = match active_model.filter(|a| !a.is_empty()) {
-        Some(a) => clean_model_id(a).to_string(),
-        None => match effective_model_value(models, model_override) {
-            Some(v) => models
-                .iter()
-                .find(|m| m.value == v)
-                .map(|m| m.display_name.clone())
-                .unwrap_or_else(|| v.to_string()),
-            None => model_override.unwrap_or("Default").to_string(),
-        },
+    let model_name = match effective_model_value(models, model_override) {
+        Some(v) => models
+            .iter()
+            .find(|m| m.value == v)
+            .map(model_label_text)
+            .unwrap_or_else(|| v.to_string()),
+        None => model_override.unwrap_or("Default").to_string(),
     };
-    match effort {
-        Some(e) => format!("{model_name} \u{00b7} {e}"),
-        None => model_name,
-    }
+    format!("{model_name} \u{00b7} {}", effort.unwrap_or("default"))
 }
 
 // ---------------------------------------------------------------------------
