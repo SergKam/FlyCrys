@@ -293,11 +293,9 @@ pub fn load_file(
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let line_count = content.lines().count().max(1);
-            if highlight::should_highlight(file_path, content.len()) {
-                highlight::highlight_buffer_with_theme(&buffer, &content, file_path, theme);
-            } else {
-                buffer.set_text(&content);
-            }
+            // Shows the content as plain text immediately, then highlights it
+            // off-thread in idle-chunked batches so the click never blocks.
+            highlight::highlight_async(text_view, &content, file_path, theme);
             update_gutter(gutter, line_count);
         }
         Err(e) => {
