@@ -1,171 +1,291 @@
+use gtk::glib;
 use gtk::prelude::*;
 use gtk4 as gtk;
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::time::Duration;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 pub const LIGHT_THEME: &str = "InspiredGitHub";
 pub const DARK_THEME: &str = "base16-eighties.dark";
 
-thread_local! {
-    static SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
+/// Loaded syntect data, shared across threads (immutable after init). Loaded
+/// once, lazily, via [`syntaxes`] — the first access (normally a worker thread
+/// computing spans) pays the load cost off the GTK main thread.
+struct Syntaxes {
+    default: SyntaxSet,
     /// Custom syntaxes (TypeScript, TSX, …) pre-compiled by build.rs.
-    static CUSTOM_SYNTAX_SET: SyntaxSet = {
-        static BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/custom_syntaxes.packdump"));
-        syntect::dumps::from_uncompressed_data(BYTES).expect("bad custom syntax packdump")
-    };
-    static THEME_SET: ThemeSet = ThemeSet::load_defaults();
+    custom: SyntaxSet,
+    themes: ThemeSet,
 }
 
-/// Apply syntax highlighting to a TextBuffer with a specific theme.
-pub fn highlight_buffer_with_theme(
-    buffer: &gtk::TextBuffer,
+fn syntaxes() -> &'static Syntaxes {
+    static SYNTAXES: OnceLock<Syntaxes> = OnceLock::new();
+    SYNTAXES.get_or_init(|| {
+        static BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/custom_syntaxes.packdump"));
+        Syntaxes {
+            default: SyntaxSet::load_defaults_newlines(),
+            custom: syntect::dumps::from_uncompressed_data(BYTES)
+                .expect("bad custom syntax packdump"),
+            themes: ThemeSet::load_defaults(),
+        }
+    })
+}
+
+/// Longest line (in bytes) the highlighter will process. Minified files are a
+/// single enormous line and are pathological for syntect; such lines are left
+/// unhighlighted (the rest of the file still highlights).
+const MAX_HL_LINE_BYTES: usize = 10_000;
+
+/// Spans applied per idle tick when tagging the buffer — bounds main-thread work
+/// per frame so large files highlight progressively instead of freezing the UI.
+const APPLY_CHUNK: usize = 1500;
+
+const HL_EPOCH_KEY: &str = "flycrys-hl-epoch";
+
+/// A computed highlight span: a character range in the buffer and its style.
+/// `Send`, so it can be produced on a worker thread and applied on the main one.
+pub struct HlSpan {
+    start: i32,
+    end: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+    bold: bool,
+    italic: bool,
+}
+
+/// Show `content` in the view immediately as plain text, then compute syntax
+/// highlighting on a worker thread and apply the tags in idle-chunked batches on
+/// the main thread — so clicking a file never blocks the UI on the highlighter.
+/// A per-view epoch discards a stale highlight if a newer file is opened before
+/// the previous one finishes.
+pub fn highlight_async(
+    text_view: &gtk::TextView,
     content: &str,
     file_path: &str,
     theme_name: &str,
 ) {
+    let buffer = text_view.buffer();
     buffer.set_text(content);
 
-    SYNTAX_SET.with(|default_ss| {
-        CUSTOM_SYNTAX_SET.with(|custom_ss| {
-            THEME_SET.with(|ts| {
-                let theme = &ts.themes[theme_name];
-                let ext = syntax_key(file_path);
+    let epoch = epoch_for(text_view);
+    let generation = epoch.get().wrapping_add(1);
+    epoch.set(generation);
 
-                let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
-                let mut h = syntect::easy::HighlightLines::new(syntax, theme);
-                let tag_table = buffer.tag_table();
+    let (tx, rx) = mpsc::channel::<Vec<HlSpan>>();
+    let content = content.to_string();
+    let file_path = file_path.to_string();
+    let theme_name = theme_name.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(compute_spans(&content, &file_path, &theme_name));
+    });
 
-                for (line_idx, line) in syntect::util::LinesWithEndings::from(content).enumerate() {
-                    let regions = match h.highlight_line(line, ss) {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
+    glib::timeout_add_local(Duration::from_millis(15), move || {
+        if epoch.get() != generation {
+            return glib::ControlFlow::Break; // superseded by a newer file
+        }
+        match rx.try_recv() {
+            Ok(spans) => {
+                apply_spans_chunked(&buffer, spans, Rc::clone(&epoch), generation);
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        }
+    });
+}
 
-                    let Some(offset_iter) = buffer.iter_at_line(line_idx as i32) else {
-                        continue;
-                    };
-                    let line_byte_start = offset_iter.offset();
+/// Compute highlight spans for `content`. Pure and thread-safe — intended for a
+/// worker thread. Returns empty when the file isn't highlightable or exceeds the
+/// size ceiling (the caller then just shows the plain text). Char offsets match
+/// a `TextBuffer` populated with the same `content`.
+pub fn compute_spans(content: &str, file_path: &str, theme_name: &str) -> Vec<HlSpan> {
+    if !should_highlight(file_path, content.len()) {
+        return Vec::new();
+    }
+    let sx = syntaxes();
+    let theme = &sx.themes.themes[theme_name];
+    let ext = syntax_key(file_path);
+    let (ss, syntax) = resolve_syntax(&sx.default, &sx.custom, ext);
+    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
 
-                    let mut byte_pos = 0;
-                    for (style, text) in regions {
-                        let start_offset = line_byte_start + byte_pos as i32;
-                        let end_offset = start_offset + text.len() as i32;
-                        byte_pos += text.len();
+    let mut spans = Vec::new();
+    let mut char_off: i32 = 0;
+    for line in syntect::util::LinesWithEndings::from(content) {
+        // Keep offsets aligned even for lines we skip highlighting.
+        let line_chars = line.chars().count() as i32;
+        if line.len() > MAX_HL_LINE_BYTES {
+            char_off += line_chars;
+            continue;
+        }
+        let Ok(regions) = h.highlight_line(line, ss) else {
+            char_off += line_chars;
+            continue;
+        };
+        for (style, text) in regions {
+            let n = text.chars().count() as i32;
+            if n > 0 {
+                let fg = style.foreground;
+                spans.push(HlSpan {
+                    start: char_off,
+                    end: char_off + n,
+                    r: fg.r,
+                    g: fg.g,
+                    b: fg.b,
+                    bold: style.font_style.contains(FontStyle::BOLD),
+                    italic: style.font_style.contains(FontStyle::ITALIC),
+                });
+            }
+            char_off += n;
+        }
+    }
+    spans
+}
 
-                        let fg = style.foreground;
-                        let bold = style.font_style.contains(FontStyle::BOLD);
-                        let italic = style.font_style.contains(FontStyle::ITALIC);
-
-                        let tag_name = format!(
-                            "hl_{:02x}{:02x}{:02x}_{}{}",
-                            fg.r, fg.g, fg.b, bold as u8, italic as u8,
-                        );
-
-                        if tag_table.lookup(&tag_name).is_none()
-                            && let Some(tag) = buffer.create_tag(
-                                Some(&tag_name),
-                                &[(
-                                    "foreground",
-                                    &format!("#{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b),
-                                )],
-                            )
-                        {
-                            if bold {
-                                tag.set_weight(700);
-                            }
-                            if italic {
-                                tag.set_style(gtk::pango::Style::Italic);
-                            }
-                        }
-
-                        let start = buffer.iter_at_offset(start_offset);
-                        let end = buffer.iter_at_offset(end_offset);
-                        buffer.apply_tag_by_name(&tag_name, &start, &end);
-                    }
+/// Apply computed spans to the buffer in idle-chunked batches, re-checking the
+/// epoch each tick so a newer file open cancels the rest.
+fn apply_spans_chunked(
+    buffer: &gtk::TextBuffer,
+    spans: Vec<HlSpan>,
+    epoch: Rc<Cell<u64>>,
+    generation: u64,
+) {
+    if spans.is_empty() {
+        return;
+    }
+    let buffer = buffer.clone();
+    let mut cursor = 0usize;
+    glib::idle_add_local(move || {
+        if epoch.get() != generation {
+            return glib::ControlFlow::Break;
+        }
+        let tag_table = buffer.tag_table();
+        let end = (cursor + APPLY_CHUNK).min(spans.len());
+        for span in &spans[cursor..end] {
+            let tag_name = format!(
+                "hl_{:02x}{:02x}{:02x}_{}{}",
+                span.r, span.g, span.b, span.bold as u8, span.italic as u8,
+            );
+            if tag_table.lookup(&tag_name).is_none()
+                && let Some(tag) = buffer.create_tag(
+                    Some(&tag_name),
+                    &[(
+                        "foreground",
+                        &format!("#{:02x}{:02x}{:02x}", span.r, span.g, span.b),
+                    )],
+                )
+            {
+                if span.bold {
+                    tag.set_weight(700);
                 }
-            })
-        })
-    })
+                if span.italic {
+                    tag.set_style(gtk::pango::Style::Italic);
+                }
+            }
+            let start = buffer.iter_at_offset(span.start);
+            let stop = buffer.iter_at_offset(span.end);
+            buffer.apply_tag_by_name(&tag_name, &start, &stop);
+        }
+        cursor = end;
+        if cursor >= spans.len() {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
+/// Per-view highlight epoch, attached to the widget; bumped on each load so a
+/// stale async highlight can detect it has been superseded.
+fn epoch_for(text_view: &gtk::TextView) -> Rc<Cell<u64>> {
+    // SAFETY: stored only here under HL_EPOCH_KEY as `Rc<Cell<u64>>` and read
+    // back with the same type; the widget outlives these closures and all access
+    // is on the GTK main thread.
+    if let Some(ptr) = unsafe { text_view.data::<Rc<Cell<u64>>>(HL_EPOCH_KEY) } {
+        return unsafe { ptr.as_ref().clone() };
+    }
+    let cell = Rc::new(Cell::new(0u64));
+    unsafe { text_view.set_data(HL_EPOCH_KEY, cell.clone()) };
+    cell
 }
 
 /// Generate Pango markup for a diff between old and new strings,
 /// with syntax highlighting based on file extension.
 pub fn diff_to_pango(old_string: &str, new_string: &str, file_path: &str) -> String {
-    SYNTAX_SET.with(|default_ss| {
-        CUSTOM_SYNTAX_SET.with(|custom_ss| {
-            THEME_SET.with(|ts| {
-                let theme = &ts.themes[LIGHT_THEME];
-                let ext = syntax_key(file_path);
-                let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
+    let sx = syntaxes();
+    let theme = &sx.themes.themes[LIGHT_THEME];
+    let ext = syntax_key(file_path);
+    let (ss, syntax) = resolve_syntax(&sx.default, &sx.custom, ext);
 
-                let mut out = String::new();
+    let mut out = String::new();
 
-                // Old lines (removed) — red background
-                {
-                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
-                    for line in old_string.lines() {
-                        out.push_str("<span background=\"#ffeef0\">");
-                        out.push_str("<span foreground=\"#b31d28\" weight=\"bold\">- </span>");
-                        let line_nl = format!("{}\n", line);
-                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
-                            for (style, text) in regions {
-                                let text = text.trim_end_matches('\n');
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                let fg = style.foreground;
-                                out.push_str(&format!(
-                                    "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
-                                    fg.r,
-                                    fg.g,
-                                    fg.b,
-                                    escape_pango(text)
-                                ));
-                            }
-                        } else {
-                            out.push_str(&escape_pango(line));
-                        }
-                        out.push_str("</span>\n");
+    // Old lines (removed) — red background
+    {
+        let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+        for line in old_string.lines() {
+            out.push_str("<span background=\"#ffeef0\">");
+            out.push_str("<span foreground=\"#b31d28\" weight=\"bold\">- </span>");
+            let line_nl = format!("{}\n", line);
+            if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                for (style, text) in regions {
+                    let text = text.trim_end_matches('\n');
+                    if text.is_empty() {
+                        continue;
                     }
+                    let fg = style.foreground;
+                    out.push_str(&format!(
+                        "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
+                        fg.r,
+                        fg.g,
+                        fg.b,
+                        escape_pango(text)
+                    ));
                 }
+            } else {
+                out.push_str(&escape_pango(line));
+            }
+            out.push_str("</span>\n");
+        }
+    }
 
-                // New lines (added) — green background
-                {
-                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
-                    for line in new_string.lines() {
-                        out.push_str("<span background=\"#e6ffed\">");
-                        out.push_str("<span foreground=\"#22863a\" weight=\"bold\">+ </span>");
-                        let line_nl = format!("{}\n", line);
-                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
-                            for (style, text) in regions {
-                                let text = text.trim_end_matches('\n');
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                let fg = style.foreground;
-                                out.push_str(&format!(
-                                    "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
-                                    fg.r,
-                                    fg.g,
-                                    fg.b,
-                                    escape_pango(text)
-                                ));
-                            }
-                        } else {
-                            out.push_str(&escape_pango(line));
-                        }
-                        out.push_str("</span>\n");
+    // New lines (added) — green background
+    {
+        let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+        for line in new_string.lines() {
+            out.push_str("<span background=\"#e6ffed\">");
+            out.push_str("<span foreground=\"#22863a\" weight=\"bold\">+ </span>");
+            let line_nl = format!("{}\n", line);
+            if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                for (style, text) in regions {
+                    let text = text.trim_end_matches('\n');
+                    if text.is_empty() {
+                        continue;
                     }
+                    let fg = style.foreground;
+                    out.push_str(&format!(
+                        "<span foreground=\"#{:02x}{:02x}{:02x}\">{}</span>",
+                        fg.r,
+                        fg.g,
+                        fg.b,
+                        escape_pango(text)
+                    ));
                 }
+            } else {
+                out.push_str(&escape_pango(line));
+            }
+            out.push_str("</span>\n");
+        }
+    }
 
-                if out.ends_with('\n') {
-                    out.pop();
-                }
+    if out.ends_with('\n') {
+        out.pop();
+    }
 
-                out
-            })
-        })
-    })
+    out
 }
 
 /// Generate HTML for a diff between old and new strings,
@@ -177,75 +297,74 @@ pub fn diff_to_html(old_string: &str, new_string: &str, file_path: &str) -> Stri
             .replace('>', "&gt;")
     }
 
-    SYNTAX_SET.with(|default_ss| {
-        CUSTOM_SYNTAX_SET.with(|custom_ss| {
-            THEME_SET.with(|ts| {
-                let theme = &ts.themes[LIGHT_THEME];
-                let ext = syntax_key(file_path);
-                let (ss, syntax) = resolve_syntax(default_ss, custom_ss, ext);
+    let sx = syntaxes();
+    let theme = &sx.themes.themes[LIGHT_THEME];
+    let ext = syntax_key(file_path);
+    let (ss, syntax) = resolve_syntax(&sx.default, &sx.custom, ext);
 
-                let mut out = String::new();
+    let mut out = String::new();
 
-                // Old lines (removed) — red background
-                {
-                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
-                    for line in old_string.lines() {
-                        out.push_str("<div class=\"diff-del\"><span style=\"color:#b31d28;font-weight:bold\">- </span>");
-                        let line_nl = format!("{}\n", line);
-                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
-                            for (style, text) in regions {
-                                let text = text.trim_end_matches('\n');
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                let fg = style.foreground;
-                                out.push_str(&format!(
-                                    "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
-                                    fg.r,
-                                    fg.g,
-                                    fg.b,
-                                    escape_html(text)
-                                ));
-                            }
-                        } else {
-                            out.push_str(&escape_html(line));
-                        }
-                        out.push_str("</div>");
+    // Old lines (removed) — red background
+    {
+        let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+        for line in old_string.lines() {
+            out.push_str(
+                "<div class=\"diff-del\"><span style=\"color:#b31d28;font-weight:bold\">- </span>",
+            );
+            let line_nl = format!("{}\n", line);
+            if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                for (style, text) in regions {
+                    let text = text.trim_end_matches('\n');
+                    if text.is_empty() {
+                        continue;
                     }
+                    let fg = style.foreground;
+                    out.push_str(&format!(
+                        "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
+                        fg.r,
+                        fg.g,
+                        fg.b,
+                        escape_html(text)
+                    ));
                 }
+            } else {
+                out.push_str(&escape_html(line));
+            }
+            out.push_str("</div>");
+        }
+    }
 
-                // New lines (added) — green background
-                {
-                    let mut h = syntect::easy::HighlightLines::new(syntax, theme);
-                    for line in new_string.lines() {
-                        out.push_str("<div class=\"diff-add\"><span style=\"color:#22863a;font-weight:bold\">+ </span>");
-                        let line_nl = format!("{}\n", line);
-                        if let Ok(regions) = h.highlight_line(&line_nl, ss) {
-                            for (style, text) in regions {
-                                let text = text.trim_end_matches('\n');
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                let fg = style.foreground;
-                                out.push_str(&format!(
-                                    "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
-                                    fg.r,
-                                    fg.g,
-                                    fg.b,
-                                    escape_html(text)
-                                ));
-                            }
-                        } else {
-                            out.push_str(&escape_html(line));
-                        }
-                        out.push_str("</div>");
+    // New lines (added) — green background
+    {
+        let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+        for line in new_string.lines() {
+            out.push_str(
+                "<div class=\"diff-add\"><span style=\"color:#22863a;font-weight:bold\">+ </span>",
+            );
+            let line_nl = format!("{}\n", line);
+            if let Ok(regions) = h.highlight_line(&line_nl, ss) {
+                for (style, text) in regions {
+                    let text = text.trim_end_matches('\n');
+                    if text.is_empty() {
+                        continue;
                     }
+                    let fg = style.foreground;
+                    out.push_str(&format!(
+                        "<span style=\"color:#{:02x}{:02x}{:02x}\">{}</span>",
+                        fg.r,
+                        fg.g,
+                        fg.b,
+                        escape_html(text)
+                    ));
                 }
+            } else {
+                out.push_str(&escape_html(line));
+            }
+            out.push_str("</div>");
+        }
+    }
 
-                out
-            })
-        })
-    })
+    out
 }
 
 /// The syntect lookup key for a path: the file extension, or — for
@@ -315,14 +434,11 @@ pub fn is_highlightable(file_path: &str) -> bool {
     if ext.is_empty() {
         return false;
     }
-    SYNTAX_SET.with(|default_ss| {
-        CUSTOM_SYNTAX_SET.with(|custom_ss| {
-            let (_, syntax) = resolve_syntax(default_ss, custom_ss, ext);
-            // resolve_syntax falls back to the "Plain Text" grammar when nothing
-            // matches; that is precisely the case we want to skip.
-            syntax.name != "Plain Text"
-        })
-    })
+    let sx = syntaxes();
+    let (_, syntax) = resolve_syntax(&sx.default, &sx.custom, ext);
+    // resolve_syntax falls back to the "Plain Text" grammar when nothing
+    // matches; that is precisely the case we want to skip.
+    syntax.name != "Plain Text"
 }
 
 /// Whether the source viewer should highlight a file of `byte_len` bytes.
@@ -338,6 +454,41 @@ pub fn should_highlight(file_path: &str, byte_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_spans_offsets_stay_in_bounds() {
+        let content = "fn main() {\n    let x = 1;\n}\n";
+        let spans = compute_spans(content, "a.rs", DARK_THEME);
+        assert!(!spans.is_empty(), "rust source should produce spans");
+        let total = content.chars().count() as i32;
+        for s in &spans {
+            assert!(
+                s.start >= 0 && s.start < s.end && s.end <= total,
+                "span {}..{} out of 0..{total}",
+                s.start,
+                s.end
+            );
+        }
+    }
+
+    #[test]
+    fn compute_spans_empty_for_unhighlightable() {
+        assert!(compute_spans("plain text\n", "notes.unknownext", DARK_THEME).is_empty());
+    }
+
+    #[test]
+    fn compute_spans_skips_pathological_long_line() {
+        // A minified-style giant line must be left unhighlighted, while a normal
+        // line after it still highlights.
+        let big = "x".repeat(MAX_HL_LINE_BYTES + 100);
+        let content = format!("{big}\nfn a() {{}}\n");
+        let spans = compute_spans(&content, "a.rs", DARK_THEME);
+        let skipped_line_chars = big.chars().count() as i32 + 1; // + newline
+        assert!(
+            spans.iter().all(|s| s.start >= skipped_line_chars),
+            "a span landed inside the skipped long line"
+        );
+    }
 
     /// syntect's bundled default set ships a PHP syntax, so resolution must land
     /// on the real "PHP" grammar (not the plain-text fallback) for both extensions.
