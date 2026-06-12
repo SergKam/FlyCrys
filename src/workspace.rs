@@ -162,7 +162,7 @@ impl Workspace {
             Rc::new(move || ctrl.trigger()) as Rc<dyn Fn()>
         });
 
-        let (agent_name_label, token_label, cost_label) = create_status_labels();
+        let (agent_name_label, model_label, token_label, cost_label) = create_status_labels();
 
         // Selectable session-id field for the status bar, updated when the agent
         // reports a session id (AgentDomainEvent::Started).
@@ -175,10 +175,20 @@ impl Workspace {
             config.borrow().agent_1_session_id.as_deref(),
         );
 
-        let (agent_panel_1, agent_input_1, agent_on_theme_change, load_history) = {
+        let (agent_panel_1, agent_input_1, agent_on_theme_change, load_history, set_models) = {
             let profile = config.borrow().agent_1_profile.clone();
             let session_id = config.borrow().agent_1_session_id.clone();
             let fork_session = config.borrow().fork_session;
+            let initial_model = config.borrow().model_override.clone();
+            let initial_effort = config.borrow().effort.clone();
+            let on_model_effort: Rc<dyn Fn(Option<String>, Option<String>)> = {
+                let cfg = Rc::clone(&config);
+                Rc::new(move |model: Option<String>, effort: Option<String>| {
+                    let mut c = cfg.borrow_mut();
+                    c.model_override = model;
+                    c.effort = effort;
+                })
+            };
             let cfg = Rc::clone(&config);
             let on_profile = Rc::new(move |name: &str| {
                 cfg.borrow_mut().agent_1_profile = name.to_string();
@@ -243,6 +253,10 @@ impl Workspace {
                 token_label.clone(),
                 cost_label.clone(),
                 agent_name_label.clone(),
+                model_label.clone(),
+                initial_model,
+                initial_effort,
+                on_model_effort,
             )
         };
 
@@ -267,6 +281,31 @@ impl Workspace {
                         // rewrite the history we just loaded.
                         last_saved.set(history.len());
                         load_history(history);
+                        glib::ControlFlow::Break
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+                }
+            });
+        }
+
+        // Probe the CLI's selectable model list off the main thread, then hand
+        // it to the panel's switcher. The list (and per-model effort levels) is
+        // fetched, never hardcoded; an empty result (CLI missing / not signed
+        // in) leaves the switcher showing its "Fetching…" placeholder.
+        {
+            let wd = working_dir.clone();
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<crate::services::cli::ModelInfo>>();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::services::cli::probe_models(&wd));
+            });
+            let set_models = Rc::clone(&set_models);
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                match rx.try_recv() {
+                    Ok(models) => {
+                        if !models.is_empty() {
+                            set_models(models);
+                        }
                         glib::ControlFlow::Break
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -305,6 +344,7 @@ impl Workspace {
         let status_bar = create_status_bar(
             &working_dir,
             &agent_name_label,
+            &model_label,
             &token_label,
             &cost_label,
             &session_label,
@@ -889,10 +929,15 @@ fn set_session_label_text(label: &gtk::Label, id: Option<&str>) {
     }
 }
 
-fn create_status_labels() -> (gtk::Label, gtk::Label, gtk::Label) {
+fn create_status_labels() -> (gtk::Label, gtk::Label, gtk::Label, gtk::Label) {
     let agent_name = gtk::Label::new(Some("Agent"));
     agent_name.add_css_class("statusbar-item");
     agent_name.set_selectable(true);
+
+    let model = gtk::Label::new(Some("Default"));
+    model.set_tooltip_text(Some("Model \u{00b7} effort"));
+    model.add_css_class("statusbar-item");
+    model.set_selectable(true);
 
     let tokens = gtk::Label::new(Some("\u{2013}"));
     tokens.set_tooltip_text(Some("Context window usage"));
@@ -904,12 +949,14 @@ fn create_status_labels() -> (gtk::Label, gtk::Label, gtk::Label) {
     cost.add_css_class("statusbar-item");
     cost.set_selectable(true);
 
-    (agent_name, tokens, cost)
+    (agent_name, model, tokens, cost)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_status_bar(
     working_dir: &Path,
     agent_name_label: &gtk::Label,
+    model_label: &gtk::Label,
     token_label: &gtk::Label,
     cost_label: &gtk::Label,
     session_label: &gtk::Label,
@@ -921,6 +968,8 @@ fn create_status_bar(
     bar.add_css_class("statusbar");
 
     bar.append(agent_name_label);
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    bar.append(model_label);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     bar.append(token_label);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));

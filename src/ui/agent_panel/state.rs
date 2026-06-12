@@ -7,6 +7,7 @@ use crate::chat_webview::ChatWebView;
 use crate::config::types::{NotificationLevel, Theme};
 use crate::models::agent_config::AgentConfig;
 use crate::models::chat::ChatMessage;
+use crate::services::cli::ModelInfo;
 use crate::services::cli::claude::ClaudeBackend;
 
 pub(crate) type BackgroundTaskResultCb = Option<Rc<dyn Fn(String, String, bool)>>;
@@ -58,6 +59,13 @@ pub(crate) struct PanelConfig {
     pub selected_profile_idx: usize,
     pub theme: Rc<std::cell::Cell<Theme>>,
     pub notification_level: Rc<std::cell::Cell<NotificationLevel>>,
+    /// Session model override (CLI model `value`). `None` → fall back to the
+    /// agent profile's model, then the CLI default. Applied at the next spawn.
+    pub model_override: Option<String>,
+    /// Session reasoning effort (`--effort`). `None` → CLI default.
+    pub effort: Option<String>,
+    /// Selectable models fetched from the CLI; drives the switcher menu.
+    pub models: Vec<ModelInfo>,
 }
 
 /// Top-level panel state — composes focused sub-structs.
@@ -76,6 +84,9 @@ pub(crate) struct PanelState {
     pub on_open_file: Rc<dyn Fn(&str)>,
     pub on_session_id_change: Rc<dyn Fn(Option<String>)>,
     pub on_profile_change: Rc<dyn Fn(&str)>,
+    /// Persists the session model override + effort to the workspace config.
+    /// Args: (model_override, effort).
+    pub on_model_effort_change: Rc<dyn Fn(Option<String>, Option<String>)>,
     pub on_tool_result: Option<Rc<dyn Fn()>>,
     /// Called when a background Bash task is detected (`run_in_background: true`).
     /// Args: (command, tool_use_id).

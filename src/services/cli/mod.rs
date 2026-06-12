@@ -76,10 +76,98 @@ pub struct AgentSpawnConfig {
     pub system_prompt: Option<String>,
     pub allowed_tools: Vec<String>,
     pub model: Option<String>,
+    /// Reasoning effort level (`--effort`): one of the model's
+    /// `supported_effort_levels`. `None` lets the CLI pick its default.
+    pub effort: Option<String>,
     pub resume_session_id: Option<String>,
     /// Fork `resume_session_id` into a new session instead of resuming it
     /// (adds `--fork-session`). Ignored when `resume_session_id` is `None`.
     pub fork_session: bool,
+}
+
+/// A model the account can select, as advertised by the CLI's `initialize`
+/// control response. The list (and each model's valid effort levels) is fetched
+/// at runtime via [`probe_models`] — nothing here is hardcoded.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct ModelInfo {
+    /// Identifier passed to `--model` (e.g. `default`, `sonnet`, `claude-fable-5[1m]`).
+    pub value: String,
+    #[serde(rename = "displayName", default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(rename = "supportsEffort", default)]
+    pub supports_effort: bool,
+    /// Effort levels valid for this model (e.g. Sonnet omits `xhigh`; Haiku has none).
+    #[serde(rename = "supportedEffortLevels", default)]
+    pub supported_effort_levels: Vec<String>,
+}
+
+/// Fetch the account's selectable models from the Claude CLI by performing the
+/// stdio control-protocol `initialize` handshake and reading the model list out
+/// of the response (`response.response.models`). Blocking — run on a worker
+/// thread. Returns an empty vec on any failure (CLI missing, auth, parse error).
+pub fn probe_models(working_dir: &Path) -> Vec<ModelInfo> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = match Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--permission-prompt-tool",
+            "stdio",
+        ])
+        .current_dir(working_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        let init = r#"{"type":"control_request","request_id":"flycrys_probe","request":{"subtype":"initialize","hooks":null}}"#;
+        let _ = writeln!(stdin, "{init}");
+        let _ = stdin.flush();
+    }
+
+    let mut models = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        // The init control-response is the first line the CLI emits; bound the
+        // scan so a missing response can't read forever.
+        for line in BufReader::new(stdout)
+            .lines()
+            .take(50)
+            .map_while(Result::ok)
+        {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if val.get("type").and_then(|v| v.as_str()) == Some("control_response") {
+                if let Some(arr) = val
+                    .pointer("/response/response/models")
+                    .and_then(|m| m.as_array())
+                {
+                    models = arr
+                        .iter()
+                        .filter_map(|m| serde_json::from_value::<ModelInfo>(m.clone()).ok())
+                        .collect();
+                }
+                break;
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    models
 }
 
 /// Backend trait for agent CLI interaction.
