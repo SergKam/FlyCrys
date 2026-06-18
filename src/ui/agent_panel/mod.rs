@@ -41,6 +41,18 @@ struct AttachedImage {
     texture: gtk::gdk::Texture,
 }
 
+/// Live voice-dictation UI state. Holds the active session (dropping it stops
+/// recording) and tracks the in-progress interim transcript so it can be
+/// replaced in place as the partial result updates, then committed on finalize.
+#[derive(Default)]
+struct VoiceUi {
+    session: Option<crate::services::voice::VoiceSession>,
+    /// Char offset in the input buffer where the current utterance's text starts.
+    interim_anchor: Option<i32>,
+    /// Char length of the interim text currently shown at the anchor.
+    interim_len: i32,
+}
+
 /// What [`create_agent_panel`] hands back: the panel widget, the input text view,
 /// a theme-change callback, a history-hydration callback (called once the
 /// persisted chat history has been parsed off-thread), and a model-list setter
@@ -159,6 +171,14 @@ pub fn create_agent_panel(
         initial_effort.as_deref(),
     ));
 
+    // --- Voice dictation (microphone) toggle ---
+    // Mimics the CLI's `/voice`: streams mic audio to Anthropic's STT endpoint
+    // using the local Claude.ai token, dropping transcripts into the input.
+    let mic_btn = gtk::ToggleButton::new();
+    mic_btn.set_icon_name("audio-input-microphone-symbolic");
+    mic_btn.set_has_frame(false);
+    mic_btn.set_tooltip_text(Some("Voice input \u{2014} dictate your message"));
+
     // --- Chat area: WebKitGTK WebView ---
     let is_dark = theme.get().is_dark();
     let webview = ChatWebView::new(is_dark, on_open_file.clone());
@@ -275,6 +295,7 @@ pub fn create_agent_panel(
     toolbar.append(&quick_btn);
     toolbar.append(&agent_btn);
     toolbar.append(&model_btn);
+    toolbar.append(&mic_btn);
     toolbar.append(&spacer);
     toolbar.append(&send_btn);
 
@@ -582,6 +603,73 @@ pub fn create_agent_panel(
     // Send button click
     let do_send_click = do_send.clone();
     send_btn.connect_clicked(move |_| do_send_click());
+
+    // --- Voice dictation: toggle to start/stop, transcripts stream into input ---
+    {
+        use crate::services::voice::{self, VoiceEvent};
+        let voice_ui: Rc<RefCell<VoiceUi>> = Rc::new(RefCell::new(VoiceUi::default()));
+        let state_voice = Rc::clone(&state);
+        let input_voice = input_view.clone();
+        mic_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                // Begin a session. Bail early (and un-toggle) on setup problems.
+                if !voice::recorder_available() {
+                    state_voice.borrow().chat.webview.append_system_message(
+                        "\u{1f3a4} No microphone recorder found. Install pipewire-pulse/\
+                         pulseaudio (parec), alsa-utils (arecord), sox (rec), or ffmpeg.",
+                    );
+                    btn.set_active(false);
+                    return;
+                }
+                let (tx, rx) = mpsc::channel::<VoiceEvent>();
+                let session = voice::start(tx);
+                {
+                    let mut vu = voice_ui.borrow_mut();
+                    vu.session = Some(session);
+                    vu.interim_anchor = None;
+                    vu.interim_len = 0;
+                }
+                btn.add_css_class("recording");
+                btn.set_tooltip_text(Some("Stop dictation"));
+
+                let vu_poll = Rc::clone(&voice_ui);
+                let input_poll = input_voice.clone();
+                let state_poll = Rc::clone(&state_voice);
+                let mic_poll = btn.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(60), move || {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(VoiceEvent::Connected) => {}
+                            Ok(VoiceEvent::Interim(t)) => {
+                                update_interim(&vu_poll, &input_poll, &t, false)
+                            }
+                            Ok(VoiceEvent::Final(t)) => {
+                                update_interim(&vu_poll, &input_poll, &t, true)
+                            }
+                            Ok(VoiceEvent::Error(e)) => {
+                                state_poll
+                                    .borrow()
+                                    .chat
+                                    .webview
+                                    .append_system_message(&format!("\u{1f3a4} Voice error: {e}"));
+                            }
+                            Ok(VoiceEvent::Closed) | Err(mpsc::TryRecvError::Disconnected) => {
+                                finish_voice(&vu_poll, &mic_poll);
+                                return glib::ControlFlow::Break;
+                            }
+                            Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                        }
+                    }
+                });
+            } else {
+                // Deactivated: request a graceful stop. The poll loop sees `Closed`
+                // and cleans up. Idempotent if the session already ended.
+                if let Some(s) = voice_ui.borrow().session.as_ref() {
+                    s.stop();
+                }
+            }
+        });
+    }
 
     // --- Slash commands popover ---
     let slash_commands = crate::services::skills::discover_slash_commands(working_dir);
@@ -1312,6 +1400,60 @@ fn model_effort_status(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Apply a voice transcript to the input buffer. Interim results replace the
+/// previous partial in place (live preview); a final result commits the segment
+/// (with a trailing space) and advances the anchor so the next utterance starts
+/// after it. Assumes the user is not simultaneously editing the interim region.
+fn update_interim(vu: &Rc<RefCell<VoiceUi>>, input: &gtk::TextView, text: &str, is_final: bool) {
+    let buffer = input.buffer();
+    let mut v = vu.borrow_mut();
+    let anchor = match v.interim_anchor {
+        Some(a) => a,
+        None => {
+            let cursor = buffer.iter_at_mark(&buffer.get_insert()).offset();
+            v.interim_anchor = Some(cursor);
+            v.interim_len = 0;
+            cursor
+        }
+    };
+
+    // Remove the currently displayed interim text.
+    let mut start = buffer.iter_at_offset(anchor);
+    let mut end = buffer.iter_at_offset(anchor + v.interim_len);
+    buffer.delete(&mut start, &mut end);
+
+    if is_final {
+        let committed = format!("{text} ");
+        let mut at = buffer.iter_at_offset(anchor);
+        buffer.insert(&mut at, &committed);
+        let new_anchor = anchor + committed.chars().count() as i32;
+        v.interim_anchor = Some(new_anchor);
+        v.interim_len = 0;
+        buffer.place_cursor(&buffer.iter_at_offset(new_anchor));
+    } else {
+        let mut at = buffer.iter_at_offset(anchor);
+        buffer.insert(&mut at, text);
+        v.interim_len = text.chars().count() as i32;
+        buffer.place_cursor(&buffer.iter_at_offset(anchor + v.interim_len));
+    }
+}
+
+/// Tear down voice UI state when a session ends: drop the session, clear interim
+/// tracking, and reset the mic button. Any committed text is left in the input.
+fn finish_voice(vu: &Rc<RefCell<VoiceUi>>, mic: &gtk::ToggleButton) {
+    {
+        let mut v = vu.borrow_mut();
+        v.session = None;
+        v.interim_anchor = None;
+        v.interim_len = 0;
+    }
+    mic.remove_css_class("recording");
+    mic.set_tooltip_text(Some("Voice input \u{2014} dictate your message"));
+    if mic.is_active() {
+        mic.set_active(false);
+    }
+}
 
 fn rebuild_attach_bar(attachments: &Rc<RefCell<Vec<AttachedImage>>>, attach_bar: &gtk::Box) {
     while let Some(child) = attach_bar.first_child() {

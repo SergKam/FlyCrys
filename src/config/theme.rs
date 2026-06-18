@@ -61,6 +61,9 @@ fn light_css() -> &'static str {
     .task-done { color: #2ec27e; }
     .task-failed { color: #e01b24; }
 
+    /* Voice dictation: mic button while actively recording */
+    button.recording { background-color: alpha(#e01b24, 0.18); color: #e01b24; }
+
     /* Force popover separators visible */
     popover separator { background-color: #c0c0c0; min-height: 1px; margin: 4px 8px; }
     "#
@@ -118,6 +121,9 @@ fn dark_css() -> &'static str {
     .task-running { color: #e5a50a; }
     .task-done { color: #2ec27e; }
     .task-failed { color: #e01b24; }
+
+    /* Voice dictation: mic button while actively recording */
+    button.recording { background-color: alpha(#ff6b6b, 0.22); color: #ff6b6b; }
 
     /* Force popover separators visible */
     popover separator { background-color: #555555; min-height: 1px; margin: 4px 8px; }
