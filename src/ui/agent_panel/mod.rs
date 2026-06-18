@@ -1330,10 +1330,18 @@ fn rebuild_model_menu(
         model_section.append_item(&gio::MenuItem::new(Some("Fetching models\u{2026}"), None));
     } else {
         for m in models {
-            let label = if effective == Some(m.value.as_str()) {
-                format!("\u{2714} {}", m.display_name)
+            let version = model_label_text(m);
+            let display = if !version.is_empty() && version != m.display_name {
+                format!("{} \u{00b7} {}", m.display_name, version)
+            } else if !m.display_name.is_empty() {
+                m.display_name.clone()
             } else {
-                format!("   {}", m.display_name)
+                version
+            };
+            let label = if effective == Some(m.value.as_str()) {
+                format!("\u{2714} {}", display)
+            } else {
+                format!("   {}", display)
             };
             let item = gio::MenuItem::new(Some(&label), None);
             item.set_action_and_target_value(
