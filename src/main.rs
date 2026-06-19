@@ -287,7 +287,25 @@ impl TabSlot {
             // avoids re-serializing a multi-MB blob to disk every autosave tick.
             let chat_len = ws.chat_history.borrow().len();
             if chat_len != ws.last_saved_chat_len.get() {
-                let id = ws.config.borrow().id.clone();
+                let (id, session_id, cwd) = {
+                    let cfg = ws.config.borrow();
+                    (
+                        cfg.id.clone(),
+                        cfg.agent_1_session_id.clone(),
+                        cfg.working_directory.clone(),
+                    )
+                };
+                // Back up the CLI's --resume transcript whenever the chat
+                // advances, so a long-idle tab can still resume after Claude's
+                // own transcript cleanup. Off-thread during autosave; sync on
+                // shutdown so the final turn is captured before we exit.
+                if let Some(session_id) = session_id {
+                    if background {
+                        session::backup_session_transcript_async(session_id, cwd);
+                    } else {
+                        session::backup_session_transcript(&session_id, &cwd);
+                    }
+                }
                 let history = ws.chat_history.borrow();
                 if background {
                     session::save_chat_history_async(&id, &history);

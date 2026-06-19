@@ -8,6 +8,8 @@ pub use crate::models::ChatMessage;
 pub use crate::models::{RunTabConfig, RunTabType, WorkspaceConfig};
 
 // Re-export all storage functions so existing `session::func()` calls still compile.
+pub use crate::services::storage::backup_session_transcript;
+pub use crate::services::storage::backup_session_transcript_async;
 pub use crate::services::storage::dedup_labels;
 pub use crate::services::storage::delete_agent_config;
 pub use crate::services::storage::delete_chat_history;
