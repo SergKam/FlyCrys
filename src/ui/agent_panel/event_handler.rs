@@ -22,7 +22,14 @@ fn notify_workspace(state: &PanelState, prefix: &str) {
         let name = (state.workspace_label)();
         let notification = gio::Notification::new("FlyCrys");
         notification.set_body(Some(&format!("{prefix} \"{name}\"")));
-        app.send_notification(None, &notification);
+        // Clicking the notification raises the window and switches to this
+        // workspace's tab, via the app's `activate-workspace` action (registered
+        // in main, with the workspace id as the target).
+        let target = state.workspace_id.to_variant();
+        notification.set_default_action_and_target_value("app.activate-workspace", Some(&target));
+        // Key by workspace id so a newer alert for the same tab replaces the
+        // older one instead of stacking up.
+        app.send_notification(Some(state.workspace_id.as_str()), &notification);
     }
 }
 
@@ -258,6 +265,9 @@ pub(crate) fn handle_domain_event(
                 s.chat.webview.append_system_message(&msg);
             }
             s.tab_spinner.set_spinning(false);
+            // Clear any lingering question indicator and restore the spinner slot.
+            s.tab_spinner.set_visible(true);
+            s.tab_question_icon.set_visible(false);
 
             s.tokens.total_cost_usd = total_cost_usd;
             s.tokens
@@ -335,6 +345,11 @@ pub(crate) fn handle_domain_event(
             remove_thinking(&mut s);
             s.chat.webview.append_question(&request_id, &input_json);
             s.chat.webview.scroll_to_bottom();
+
+            // Swap the tab spinner for the pulsing question indicator while the
+            // agent is blocked waiting on the user's answer.
+            s.tab_spinner.set_visible(false);
+            s.tab_question_icon.set_visible(true);
 
             // Desktop notification — distinct from the "finished" message so the
             // user knows the agent is blocked waiting on their answer.

@@ -71,8 +71,10 @@ pub fn create_agent_panel(
     theme: Rc<Cell<Theme>>,
     notification_level: Rc<Cell<NotificationLevel>>,
     tab_spinner: gtk::Spinner,
+    tab_question_icon: gtk::Image,
     working_dir: &std::path::Path,
     workspace_label: Rc<dyn Fn() -> String>,
+    workspace_id: String,
     agent_configs: Vec<AgentConfig>,
     initial_profile: &str,
     resume_session_id: Option<String>,
@@ -342,6 +344,8 @@ pub fn create_agent_panel(
         },
         model_status_label: model_status_label.clone(),
         tab_spinner,
+        tab_question_icon,
+        workspace_id,
         workspace_label,
         on_open_file,
         on_session_id_change,
@@ -449,6 +453,10 @@ pub fn create_agent_panel(
                     .process
                     .process
                     .answer_question(&request_id, updated_input);
+                // Agent resumes — swap the question indicator back to the spinner.
+                s.tab_question_icon.set_visible(false);
+                s.tab_spinner.set_visible(true);
+                s.tab_spinner.set_spinning(true);
             },
         ));
     }
@@ -463,6 +471,10 @@ pub fn create_agent_panel(
             .set_on_reject_question(Rc::new(move |request_id: String| {
                 let mut s = state_rej.borrow_mut();
                 let _ = s.process.process.reject_question(&request_id);
+                // Agent resumes — swap the question indicator back to the spinner.
+                s.tab_question_icon.set_visible(false);
+                s.tab_spinner.set_visible(true);
+                s.tab_spinner.set_spinning(true);
             }));
     }
 
@@ -591,6 +603,9 @@ pub fn create_agent_panel(
             // Show thinking indicator in WebView
             let thinking_id = s.chat.webview.show_thinking();
             s.chat.thinking_id = Some(thinking_id);
+            // Sending a new message supersedes any pending question prompt.
+            s.tab_question_icon.set_visible(false);
+            s.tab_spinner.set_visible(true);
             s.tab_spinner.set_spinning(true);
             drop(s);
 
