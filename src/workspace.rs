@@ -23,6 +23,7 @@ pub struct Workspace {
     pub root: gtk::Box,
     pub config: Rc<RefCell<WorkspaceConfig>>,
     pub tab_spinner: gtk::Spinner,
+    pub tab_question_icon: gtk::Image,
     pub chat_history: Rc<RefCell<Vec<session::ChatMessage>>>,
     /// Length of `chat_history` at the last autosave. Chat history is
     /// append-only, so a length change is a faithful "dirty" signal — the
@@ -42,6 +43,7 @@ impl Workspace {
         theme: Rc<Cell<Theme>>,
         notification_level: Rc<Cell<NotificationLevel>>,
         tab_spinner: gtk::Spinner,
+        tab_question_icon: gtk::Image,
     ) -> Self {
         let working_dir = PathBuf::from(&config.working_directory);
         let config = Rc::new(RefCell::new(config));
@@ -231,14 +233,17 @@ impl Workspace {
                 let cfg = Rc::clone(&config);
                 Rc::new(move || cfg.borrow().tab_label())
             };
+            let workspace_id = config.borrow().id.clone();
 
             agent_panel::create_agent_panel(
                 Rc::clone(&on_open_file),
                 Rc::clone(&theme),
                 Rc::clone(&notification_level),
                 tab_spinner.clone(),
+                tab_question_icon.clone(),
                 &working_dir,
                 workspace_label,
+                workspace_id,
                 agent_configs,
                 &profile,
                 session_id,
@@ -429,6 +434,7 @@ impl Workspace {
             root,
             config,
             tab_spinner,
+            tab_question_icon,
             chat_history,
             last_saved_chat_len,
             run_panel,

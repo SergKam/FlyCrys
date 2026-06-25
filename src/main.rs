@@ -72,6 +72,9 @@ struct TabSlot {
     wrapper: gtk::Box,
     /// Spinner widget shared between the tab label and the workspace.
     spinner: gtk::Spinner,
+    /// Question indicator shared between the tab label and the workspace; shown
+    /// in place of the spinner while the agent awaits an AskUserQuestion answer.
+    question_icon: gtk::Image,
     /// Set when the tab hasn't been visited yet; consumed by `materialize()`.
     pending_config: Option<WorkspaceConfig>,
     /// Set once the workspace has been constructed.
@@ -79,6 +82,17 @@ struct TabSlot {
     /// True between scheduling the deferred build and its completion — prevents
     /// a second switch to the same tab from kicking off a duplicate build.
     materializing: bool,
+}
+
+/// Build the per-tab "needs answer" indicator: a question-mark icon, hidden
+/// until an AskUserQuestion arrives. The `.tab-question` class drives its colour
+/// and pulse animation (see `config::theme`).
+fn make_tab_question_icon() -> gtk::Image {
+    let icon = gtk::Image::from_icon_name("dialog-question-symbolic");
+    icon.set_pixel_size(14);
+    icon.set_visible(false);
+    icon.add_css_class("tab-question");
+    icon
 }
 
 impl TabSlot {
@@ -90,14 +104,22 @@ impl TabSlot {
     ) -> Self {
         let spinner = gtk::Spinner::new();
         spinner.set_size_request(12, 12);
+        let question_icon = make_tab_question_icon();
         let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
         wrapper.set_vexpand(true);
         wrapper.set_hexpand(true);
-        let ws = Workspace::new(config, theme, notification_level, spinner.clone());
+        let ws = Workspace::new(
+            config,
+            theme,
+            notification_level,
+            spinner.clone(),
+            question_icon.clone(),
+        );
         wrapper.append(&ws.root);
         TabSlot {
             wrapper,
             spinner,
+            question_icon,
             pending_config: None,
             workspace: Some(ws),
             materializing: false,
@@ -108,12 +130,14 @@ impl TabSlot {
     fn new_pending(config: WorkspaceConfig) -> Self {
         let spinner = gtk::Spinner::new();
         spinner.set_size_request(12, 12);
+        let question_icon = make_tab_question_icon();
         let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
         wrapper.set_vexpand(true);
         wrapper.set_hexpand(true);
         TabSlot {
             wrapper,
             spinner,
+            question_icon,
             pending_config: Some(config),
             workspace: None,
             materializing: false,
@@ -142,6 +166,7 @@ impl TabSlot {
 
         let wrapper = self.wrapper.clone();
         let spinner = self.spinner.clone();
+        let question_icon = self.question_icon.clone();
         glib::idle_add_local_once(move || {
             // Take the pending config under a short borrow, then build with the
             // AppState borrow released (the build doesn't need it, and freeing it
@@ -157,7 +182,7 @@ impl TabSlot {
                 }
             };
 
-            let ws = Workspace::new(config, theme, notification_level, spinner);
+            let ws = Workspace::new(config, theme, notification_level, spinner, question_icon);
 
             let mut state = app_state.borrow_mut();
             if let Some(slot) = state.slots.iter_mut().find(|s| s.wrapper == wrapper) {
@@ -450,6 +475,7 @@ fn build_ui(app: &gtk::Application) {
         let label = create_tab_label(
             &label_text,
             &slot.spinner,
+            &slot.question_icon,
             &notebook,
             &slot.wrapper,
             &app_state,
@@ -470,6 +496,7 @@ fn build_ui(app: &gtk::Application) {
             let label = create_tab_label(
                 &labels[i],
                 &slot.spinner,
+                &slot.question_icon,
                 &notebook,
                 &slot.wrapper,
                 &app_state,
@@ -529,6 +556,7 @@ fn build_ui(app: &gtk::Application) {
                     let label = create_tab_label(
                         &label_text,
                         &slot.spinner,
+                        &slot.question_icon,
                         &notebook,
                         &slot.wrapper,
                         &app_state,
@@ -595,6 +623,40 @@ fn build_ui(app: &gtk::Application) {
     }
 
     let window = window_builder.build();
+
+    // Notification click → raise the window and switch to the tab the
+    // notification is about. Desktop notifications set this as their default
+    // action with the workspace id as target (see agent_panel event handler).
+    {
+        let activate_ws =
+            gio::SimpleAction::new("activate-workspace", Some(glib::VariantTy::STRING));
+        activate_ws.connect_activate(glib::clone!(
+            #[weak]
+            notebook,
+            #[weak]
+            window,
+            #[strong]
+            app_state,
+            move |_, param| {
+                let Some(id) = param.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                // Resolve the index under a short borrow, then drop it before
+                // set_current_page — switching fires switch-page, which borrows
+                // app_state mutably.
+                let idx = app_state
+                    .borrow()
+                    .slots
+                    .iter()
+                    .position(|s| s.workspace_id() == id);
+                if let Some(idx) = idx {
+                    notebook.set_current_page(Some(idx as u32));
+                }
+                window.present();
+            }
+        ));
+        app.add_action(&activate_ws);
+    }
 
     // Register bundled icons so GTK can find "flycrys" icon by name
     {
@@ -821,6 +883,7 @@ fn build_settings_menu(
 fn create_tab_label(
     text: &str,
     tab_spinner: &gtk::Spinner,
+    tab_question_icon: &gtk::Image,
     notebook: &gtk::Notebook,
     page_widget: &gtk::Box,
     app_state: &Rc<RefCell<AppState>>,
@@ -830,6 +893,7 @@ fn create_tab_label(
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 4);
 
     hbox.append(tab_spinner);
+    hbox.append(tab_question_icon);
 
     let label = gtk::Label::new(Some(text));
     label.set_hexpand(true);
@@ -1167,6 +1231,7 @@ fn clone_workspace(
     let label = create_tab_label(
         &label_text,
         &slot.spinner,
+        &slot.question_icon,
         notebook,
         &slot.wrapper,
         app_state,

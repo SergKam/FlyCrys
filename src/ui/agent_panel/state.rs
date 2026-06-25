@@ -78,6 +78,13 @@ pub(crate) struct PanelState {
     /// actions, the model probe, and the `Started` event.
     pub model_status_label: gtk::Label,
     pub tab_spinner: gtk::Spinner,
+    /// Tab indicator shown in place of the spinner while the agent is blocked on
+    /// an AskUserQuestion. Hidden the rest of the time; the spinner takes over
+    /// again as soon as the agent resumes.
+    pub tab_question_icon: gtk::Image,
+    /// Stable workspace id, used as the desktop-notification target so clicking
+    /// the notification can switch to this exact tab.
+    pub workspace_id: String,
     /// Returns the workspace's current display name (custom tab label if set,
     /// else the directory basename). Used for desktop notification bodies, so it
     /// must reflect renames — hence a getter over the shared config, not a

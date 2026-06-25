@@ -64,6 +64,10 @@ fn light_css() -> &'static str {
     /* Voice dictation: mic button while actively recording */
     button.recording { background-color: alpha(#e01b24, 0.18); color: #e01b24; }
 
+    /* Tab "needs answer" indicator: amber question mark, gently pulsing */
+    @keyframes flycrys-q-pulse { 0% { opacity: 1; } 50% { opacity: 0.25; } 100% { opacity: 1; } }
+    .tab-question { color: #e5a50a; animation: flycrys-q-pulse 1.2s ease-in-out infinite; }
+
     /* Force popover separators visible */
     popover separator { background-color: #c0c0c0; min-height: 1px; margin: 4px 8px; }
     "#
@@ -124,6 +128,10 @@ fn dark_css() -> &'static str {
 
     /* Voice dictation: mic button while actively recording */
     button.recording { background-color: alpha(#ff6b6b, 0.22); color: #ff6b6b; }
+
+    /* Tab "needs answer" indicator: amber question mark, gently pulsing */
+    @keyframes flycrys-q-pulse { 0% { opacity: 1; } 50% { opacity: 0.25; } 100% { opacity: 1; } }
+    .tab-question { color: #f6d32d; animation: flycrys-q-pulse 1.2s ease-in-out infinite; }
 
     /* Force popover separators visible */
     popover separator { background-color: #555555; min-height: 1px; margin: 4px 8px; }
