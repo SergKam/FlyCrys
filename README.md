@@ -1,5 +1,22 @@
 # FlyCrys
 
+> ## ⚠️ No longer actively developed
+>
+> On June 30, 2026 Anthropic released an **official Claude Desktop app for Linux**
+> ([download](https://claude.com/download) · [docs](https://code.claude.com/docs/en/desktop-linux)),
+> covering Ubuntu and Debian on x64 and arm64 with the same Chat, Cowork and Claude Code
+> experience as macOS and Windows.
+>
+> FlyCrys existed because there was no native Linux GUI for Claude Code. Now there is one,
+> built by the people who make Claude Code itself. There is no point in maintaining a copy
+> and competing with the original, so **development has stopped**.
+>
+> The repository stays online as an archive: the code still builds and the last release still
+> works, but expect no new features, no bug fixes and no support. If you are here looking for
+> a Linux desktop for Claude, **use the official app**.
+>
+> Thanks to everyone who starred, filed issues and sent patches.
+
 **Native Linux GUI for Claude Code agents.** One binary, starts in under a second, no Electron.
 
 [![GitHub stars](https://img.shields.io/github/stars/SergKam/FlyCrys?style=flat)](https://github.com/SergKam/FlyCrys/stargazers)
@@ -18,7 +35,7 @@ FlyCrys is not an IDE. It doesn't edit files. Agents do. You talk to agents, the
 
 ### What makes it different
 
-- **Only native Linux GUI for Claude Code** — Opcode uses webview, Claude Desktop skips Linux entirely
+- **Native Linux GUI for Claude Code** — Opcode uses webview; when FlyCrys started, Claude Desktop skipped Linux entirely (it no longer does — see the notice above)
 - **GTK4 native** — follows system theme, integrates with GNOME, minimal resources
 - **Workspace-oriented** — not just a chat wrapper; file tree, viewer, terminal, git panel, all wired together
 - **Agent profiles** — preconfigured Security, Research, Default agents with custom system prompts and tool restrictions
